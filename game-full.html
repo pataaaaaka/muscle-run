@@ -1,0 +1,3705 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>MUSCLE TRAINER - Complete</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Press Start 2P', monospace;
+      background: #000; color: #fff;
+      display: flex; justify-content: center; align-items: center;
+      min-height: 100vh; overflow: hidden;
+    }
+    canvas { border: 3px solid #00ff88; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" width="800" height="600"></canvas>
+  <script>
+
+// ========== プレイヤーコアシステム ==========
+const PLAYER_WIDTH = 30;
+const PLAYER_HEIGHT = 40;
+const PLAYER_SPEED = 4;
+const JUMP_POWER = -12;
+const GRAVITY = 0.5;
+const DASH_SPEED = 8;
+const DASH_DURATION = 15;
+
+const BODY_TYPES = {
+  SLIM: {
+    name: 'SLIM', condition: (fat, muscle) => fat + muscle < 30,
+    speedMultiplier: 1.3, jumpMultiplier: 1.3, dashMultiplier: 1.2,
+    color: '#87CEEB', canThrow: false, width: 0.8, height: 1.1
+  },
+  NORMAL: {
+    name: 'NORMAL', condition: (fat, muscle) => fat + muscle >= 30 && Math.abs(fat - muscle) <= 20,
+    speedMultiplier: 1.0, jumpMultiplier: 1.0, dashMultiplier: 1.0,
+    color: '#FFD700', canThrow: false, width: 1.0, height: 1.0
+  },
+  MUSCLE: {
+    name: 'MUSCLE', condition: (fat, muscle) => muscle > fat && fat + muscle >= 30,
+    speedMultiplier: 0.9, jumpMultiplier: 0.9, dashMultiplier: 0.8,
+    color: '#FF4444', canThrow: true, width: 1.2, height: 1.1
+  },
+  FAT: {
+    name: 'FAT', condition: (fat, muscle) => fat > muscle && fat + muscle >= 30,
+    speedMultiplier: 0.7, jumpMultiplier: 0.6, dashMultiplier: 0.5,
+    color: '#FFA500', canThrow: false, width: 1.3, height: 1.2
+  }
+};
+
+function determineBodyType(fatGauge, muscleGauge) {
+  if (BODY_TYPES.MUSCLE.condition(fatGauge, muscleGauge)) return 'MUSCLE';
+  if (BODY_TYPES.FAT.condition(fatGauge, muscleGauge)) return 'FAT';
+  if (BODY_TYPES.SLIM.condition(fatGauge, muscleGauge)) return 'SLIM';
+  return 'NORMAL';
+}
+
+function getBodyTypeData(bodyType) {
+  return BODY_TYPES[bodyType] || BODY_TYPES.NORMAL;
+}
+
+/**
+ * BaseEnemy.js
+ * 敵キャラクターの基底クラス
+ */
+
+class BaseEnemy {
+  constructor(game, x, y, config = {}) {
+    this.game = game;
+    this.x = x;
+    this.y = y;
+    
+    // 基本設定
+    this.width = config.width || 32;
+    this.height = config.height || 32;
+    this.hp = config.hp || 1;
+    this.maxHp = this.hp;
+    
+    // 移動関連
+    this.vx = config.vx || -1;
+    this.vy = config.vy || 0;
+    this.speed = config.speed || 1;
+    this.gravity = config.gravity !== undefined ? config.gravity : 0.5;
+    this.onGround = false;
+    
+    // 敵タイプ
+    this.type = config.type || 'food'; // 'food' or 'virus'
+    this.enemyClass = config.enemyClass || 'normal'; // 'normal', 'poison', 'boss'
+    
+    // 特性
+    this.canBeStomped = config.canBeStomped !== undefined ? config.canBeStomped : true;
+    this.isPoisonous = config.isPoisonous || false;
+    this.canClimbWalls = config.canClimbWalls || false;
+    this.canFly = config.canFly || false;
+    
+    // スコア・ゲージ報酬
+    this.scoreValue = config.scoreValue || 100;
+    this.muscleReward = config.muscleReward || (this.type === 'virus' ? 15 : 10);
+    this.fatPenalty = config.fatPenalty || 5;
+    
+    // 状態管理
+    this.isAlive = true;
+    this.isDying = false;
+    this.deathTimer = 0;
+    this.deathDuration = 30; // 30フレーム
+    
+    // 見た目
+    this.emoji = config.emoji || '👾';
+    this.color = config.color || '#ff0000';
+    this.rotation = 0;
+    
+    // AI・行動
+    this.aiTimer = 0;
+    this.aiInterval = config.aiInterval || 60;
+    this.direction = -1; // -1: 左, 1: 右
+  }
+
+  update() {
+    if (!this.isAlive) return;
+    
+    if (this.isDying) {
+      this.updateDeath();
+      return;
+    }
+    
+    this.updateAI();
+    this.updatePhysics();
+    this.checkCollisions();
+    this.checkOutOfBounds();
+  }
+
+  updateAI() {
+    this.aiTimer++;
+  }
+
+  updatePhysics() {
+    if (!this.canFly && !this.onGround) {
+      this.vy += this.gravity;
+      this.vy = Math.min(this.vy, 10);
+    }
+    
+    this.x += this.vx;
+    this.y += this.vy;
+    
+    this.onGround = false;
+  }
+
+  checkCollisions() {
+    const canvas = this.game.canvas || {width:800, height:600};
+    
+    if (this.y + this.height >= canvas.height - 50) {
+      this.y = canvas.height - 50 - this.height;
+      this.vy = 0;
+      this.onGround = true;
+    }
+    
+    if (this.x < 0) {
+      this.x = 0;
+      this.direction = 1;
+      this.vx = Math.abs(this.vx);
+    }
+    if (this.x + this.width > canvas.width) {
+      this.x = canvas.width - this.width;
+      this.direction = -1;
+      this.vx = -Math.abs(this.vx);
+    }
+  }
+
+  checkOutOfBounds() {
+    const buffer = 100;
+    if (this.y > this.game.canvas.height + buffer) {
+      this.isAlive = false;
+    }
+  }
+
+  takeDamage(damage = 1, source = 'stomp') {
+    if (this.isDying) return false;
+    
+    this.hp -= damage;
+    
+    if (this.hp <= 0) {
+      this.die(source);
+      return true;
+    } else {
+      this.onDamaged(damage, source);
+      return false;
+    }
+  }
+
+  onDamaged(damage, source) {
+    // オーバーライド用
+  }
+
+  die(source = 'stomp') {
+    this.isDying = true;
+    this.deathTimer = 0;
+    
+    this.game.addScore(this.scoreValue);
+    
+    if (source === 'stomp') {
+      this.game.addMuscle(this.muscleReward);
+    }
+    
+    this.createDeathParticles();
+  }
+
+  updateDeath() {
+    this.deathTimer++;
+    this.y -= 2;
+    this.rotation += 0.2;
+    
+    if (this.deathTimer >= this.deathDuration) {
+      this.isAlive = false;
+    }
+  }
+
+  createDeathParticles() {
+    const particleCount = 8;
+    for (let i = 0; i < particleCount; i++) {
+      const angle = (Math.PI * 2 * i) / particleCount;
+      const speed = 3;
+      const particle = {
+        x: this.x + this.width / 2,
+        y: this.y + this.height / 2,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 2,
+        life: 30,
+        color: this.color,
+        size: 4
+      };
+      
+      if (this.game.particles) {
+        this.game.particles.push(particle);
+      }
+    }
+  }
+
+  checkPlayerCollision(player) {
+    if (!this.isAlive || this.isDying) return null;
+    
+    const playerBox = {
+      x: player.x,
+      y: player.y,
+      width: player.width,
+      height: player.height
+    };
+    
+    const enemyBox = {
+      x: this.x,
+      y: this.y,
+      width: this.width,
+      height: this.height
+    };
+    
+    if (this.boxCollision(playerBox, enemyBox)) {
+      if (player.vy > 0 && player.y + player.height - 10 < this.y + this.height / 2) {
+        return 'stomp';
+      } else {
+        return 'touch';
+      }
+    }
+    
+    return null;
+  }
+
+  boxCollision(box1, box2) {
+    return box1.x < box2.x + box2.width &&
+           box1.x + box1.width > box2.x &&
+           box1.y < box2.y + box2.height &&
+           box1.y + box1.height > box2.y;
+  }
+
+  onStomped(player) {
+    if (!this.canBeStomped) {
+      return false;
+    }
+    
+    if (this.type === 'virus' && player.bodyType !== 'MUSCLE' && player.bodyType !== 'NORMAL') {
+      return false;
+    }
+    
+    this.takeDamage(1, 'stomp');
+    player.vy = -8;
+    
+    return true;
+  }
+
+  onTouched(player) {
+    if (player.isInvincible) return;
+    
+    player.takeDamage(1);
+    
+    if (this.type === 'food') {
+      player.addFat(this.fatPenalty);
+    } else if (this.type === 'virus') {
+      player.addMuscle(-this.fatPenalty);
+    }
+    
+    const knockbackDirection = player.x < this.x ? -1 : 1;
+    player.vx = knockbackDirection * 5;
+    player.vy = -5;
+  }
+
+  onHitByDumbbell(dumbbell) {
+    this.takeDamage(1, 'dumbbell');
+    return true;
+  }
+
+  draw(ctx) {
+    if (!this.isAlive) return;
+    
+    ctx.save();
+    
+    if (this.isDying) {
+      ctx.globalAlpha = 1 - (this.deathTimer / this.deathDuration);
+    }
+    
+    if (this.rotation !== 0) {
+      ctx.translate(this.x + this.width / 2, this.y + this.height / 2);
+      ctx.rotate(this.rotation);
+      ctx.translate(-(this.x + this.width / 2), -(this.y + this.height / 2));
+    }
+    
+    ctx.font = `${this.height}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(this.emoji, this.x + this.width / 2, this.y + this.height / 2);
+    
+    if (this.game.debug && this.hp < this.maxHp && !this.isDying) {
+      this.drawHPBar(ctx);
+    }
+    
+    ctx.restore();
+  }
+
+  drawHPBar(ctx) {
+    const barWidth = this.width;
+    const barHeight = 4;
+    const barX = this.x;
+    const barY = this.y - 8;
+    
+    ctx.fillStyle = '#333';
+    ctx.fillRect(barX, barY, barWidth, barHeight);
+    
+    ctx.fillStyle = '#00ff00';
+    ctx.fillRect(barX, barY, (this.hp / this.maxHp) * barWidth, barHeight);
+  }
+
+  drawDebug(ctx) {
+    if (!this.game.debug || !this.isAlive) return;
+    
+    ctx.strokeStyle = this.isPoisonous ? '#ff00ff' : '#ff0000';
+    ctx.strokeRect(this.x, this.y, this.width, this.height);
+    
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '10px Arial';
+    ctx.fillText(`HP:${this.hp}`, this.x, this.y - 12);
+  }
+}
+
+/**
+ * FoodEnemies.js
+ * 食べ物系の敵5種類
+ */
+
+// 🍔 ハンバーガー - HP1, 地上を歩く
+class Hamburger extends BaseEnemy {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      width: 32,
+      height: 32,
+      hp: 1,
+      vx: -1,
+      speed: 1,
+      type: 'food',
+      emoji: '🍔',
+      color: '#D2691E',
+      scoreValue: 100,
+      muscleReward: 10,
+      fatPenalty: 5,
+      canBeStomped: true
+    });
+  }
+
+  updateAI() {
+    super.updateAI();
+    
+    // シンプルに左右に歩く
+    this.vx = this.direction * this.speed;
+  }
+}
+
+// 🍟 フライドポテト - HP1, ジャンプして襲う
+class FrenchFries extends BaseEnemy {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      width: 28,
+      height: 32,
+      hp: 1,
+      vx: -1.2,
+      speed: 1.2,
+      type: 'food',
+      emoji: '🍟',
+      color: '#FFD700',
+      scoreValue: 120,
+      muscleReward: 10,
+      fatPenalty: 5,
+      canBeStomped: true,
+      aiInterval: 90
+    });
+    
+    this.jumpCooldown = 0;
+  }
+
+  updateAI() {
+    super.updateAI();
+    
+    this.vx = this.direction * this.speed;
+    
+    // ジャンプ攻撃
+    if (this.jumpCooldown > 0) {
+      this.jumpCooldown--;
+    }
+    
+    if (this.onGround && this.jumpCooldown === 0) {
+      // プレイヤーが近くにいたらジャンプ
+      if (this.game.player) {
+        const dx = this.game.player.x - this.x;
+        const dy = this.game.player.y - this.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        
+        if (distance < 150 && Math.abs(dy) < 100) {
+          this.vy = -7;
+          this.jumpCooldown = 120; // 2秒クールダウン
+        }
+      }
+    }
+  }
+}
+
+// 🍕 ピザ - HP2, 回転しながら移動
+class Pizza extends BaseEnemy {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      width: 36,
+      height: 36,
+      hp: 2,
+      vx: -1.5,
+      speed: 1.5,
+      type: 'food',
+      emoji: '🍕',
+      color: '#FF6347',
+      scoreValue: 200,
+      muscleReward: 10,
+      fatPenalty: 8,
+      canBeStomped: true
+    });
+    
+    this.rotationSpeed = 0.1;
+  }
+
+  updateAI() {
+    super.updateAI();
+    
+    this.vx = this.direction * this.speed;
+    
+    // 回転
+    this.rotation += this.rotationSpeed * this.direction;
+  }
+}
+
+// 🍩 ドーナツ - HP1, 転がってくる
+class Donut extends BaseEnemy {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      width: 30,
+      height: 30,
+      hp: 1,
+      vx: -2,
+      speed: 2,
+      type: 'food',
+      emoji: '🍩',
+      color: '#FF69B4',
+      scoreValue: 150,
+      muscleReward: 10,
+      fatPenalty: 6,
+      canBeStomped: true
+    });
+    
+    this.rotationSpeed = 0.15;
+  }
+
+  updateAI() {
+    super.updateAI();
+    
+    this.vx = this.direction * this.speed;
+    
+    // 転がる動き
+    if (this.onGround) {
+      this.rotation += this.rotationSpeed * this.direction;
+    }
+  }
+
+  checkCollisions() {
+    super.checkCollisions();
+    
+    // 壁に当たったら反転
+    if (this.x <= 0 || this.x + this.width >= this.game.canvas.width) {
+      this.direction *= -1;
+    }
+  }
+}
+
+// 🧃 ソーダ - HP1, 上下に浮遊
+class Soda extends BaseEnemy {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      width: 28,
+      height: 32,
+      hp: 1,
+      vx: -0.8,
+      vy: 0,
+      speed: 0.8,
+      gravity: 0, // 浮遊するので重力なし
+      type: 'food',
+      emoji: '🧃',
+      color: '#87CEEB',
+      scoreValue: 130,
+      muscleReward: 10,
+      fatPenalty: 5,
+      canBeStomped: true,
+      canFly: true
+    });
+    
+    this.floatAmplitude = 40; // 上下移動の幅
+    this.floatSpeed = 0.05;
+    this.floatOffset = Math.random() * Math.PI * 2; // ランダムな初期位相
+    this.baseY = y;
+  }
+
+  updateAI() {
+    super.updateAI();
+    
+    // 左右移動
+    this.vx = this.direction * this.speed;
+    
+    // 上下に波動移動
+    const floatY = Math.sin(this.aiTimer * this.floatSpeed + this.floatOffset) * this.floatAmplitude;
+    this.y = this.baseY + floatY;
+  }
+
+  updatePhysics() {
+    // 重力を無視
+    this.x += this.vx;
+    // y座標はupdateAIで制御
+  }
+
+  checkCollisions() {
+    // 壁判定のみ
+    if (this.x < 0) {
+      this.x = 0;
+      this.direction = 1;
+    }
+    if (this.x + this.width > this.game.canvas.width) {
+      this.x = this.game.canvas.width - this.width;
+      this.direction = -1;
+    }
+  }
+}
+
+/**
+ * VirusEnemies.js
+ * ウイルス/病原菌系の敵5種類
+ */
+
+// 🦠 ウイルス - HP1, ランダムに動く
+class Virus extends BaseEnemy {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      width: 30,
+      height: 30,
+      hp: 1,
+      vx: 0,
+      vy: 0,
+      speed: 2,
+      gravity: 0,
+      type: 'virus',
+      emoji: '🦠',
+      color: '#00FF00',
+      scoreValue: 150,
+      muscleReward: 15,
+      fatPenalty: 5,
+      canBeStomped: true,
+      canFly: true,
+      aiInterval: 30
+    });
+    
+    this.changeDirectionTimer = 0;
+  }
+
+  updateAI() {
+    super.updateAI();
+    
+    this.changeDirectionTimer++;
+    
+    // ランダムに方向転換
+    if (this.changeDirectionTimer >= this.aiInterval) {
+      this.changeDirectionTimer = 0;
+      
+      const angle = Math.random() * Math.PI * 2;
+      this.vx = Math.cos(angle) * this.speed;
+      this.vy = Math.sin(angle) * this.speed;
+    }
+  }
+
+  updatePhysics() {
+    // 重力なし
+    this.x += this.vx;
+    this.y += this.vy;
+  }
+
+  checkCollisions() {
+    const canvas = this.game.canvas || {width:800, height:600};
+    const margin = 50;
+    
+    // 画面端で反転
+    if (this.x < margin) {
+      this.x = margin;
+      this.vx = Math.abs(this.vx);
+    }
+    if (this.x + this.width > canvas.width - margin) {
+      this.x = canvas.width - margin - this.width;
+      this.vx = -Math.abs(this.vx);
+    }
+    if (this.y < margin) {
+      this.y = margin;
+      this.vy = Math.abs(this.vy);
+    }
+    if (this.y + this.height > canvas.height - margin) {
+      this.y = canvas.height - margin - this.height;
+      this.vy = -Math.abs(this.vy);
+    }
+  }
+}
+
+// 🧪 バクテリア - HP2, 分裂（ダメージ時）
+class Bacteria extends BaseEnemy {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      width: 32,
+      height: 32,
+      hp: 2,
+      vx: -1,
+      speed: 1,
+      type: 'virus',
+      emoji: '🧪',
+      color: '#9370DB',
+      scoreValue: 250,
+      muscleReward: 15,
+      fatPenalty: 5,
+      canBeStomped: true
+    });
+    
+    this.canSplit = true; // 1回のみ分裂可能
+  }
+
+  updateAI() {
+    super.updateAI();
+    
+    this.vx = this.direction * this.speed;
+  }
+
+  onDamaged(damage, source) {
+    super.onDamaged(damage, source);
+    
+    // ダメージを受けたら分裂
+    if (this.canSplit && this.hp > 0) {
+      this.split();
+      this.canSplit = false;
+    }
+  }
+
+  split() {
+    // 小さなバクテリアを2体生成
+    const offset = 20;
+    
+    // 左側
+    const bacteria1 = new SmallBacteria(this.game, this.x - offset, this.y);
+    bacteria1.vx = -2;
+    bacteria1.vy = -3;
+    
+    // 右側
+    const bacteria2 = new SmallBacteria(this.game, this.x + offset, this.y);
+    bacteria2.vx = 2;
+    bacteria2.vy = -3;
+    
+    if (this.game.enemies) {
+      this.game.enemies.push(bacteria1);
+      this.game.enemies.push(bacteria2);
+    }
+  }
+}
+
+// 小さなバクテリア（分裂後）
+class SmallBacteria extends BaseEnemy {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      width: 20,
+      height: 20,
+      hp: 1,
+      vx: -1.5,
+      speed: 1.5,
+      type: 'virus',
+      emoji: '🧪',
+      color: '#9370DB',
+      scoreValue: 100,
+      muscleReward: 15,
+      fatPenalty: 3,
+      canBeStomped: true
+    });
+  }
+
+  updateAI() {
+    super.updateAI();
+    this.vx = this.direction * this.speed;
+  }
+}
+
+// 🍄 毒キノコ - HP2, 毒を撒き散らす
+class PoisonMushroom extends BaseEnemy {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      width: 32,
+      height: 32,
+      hp: 2,
+      vx: -0.8,
+      speed: 0.8,
+      type: 'virus',
+      enemyClass: 'poison',
+      emoji: '🍄',
+      color: '#8B008B',
+      scoreValue: 300,
+      muscleReward: 15,
+      fatPenalty: 10,
+      canBeStomped: false, // 毒なので踏めない
+      isPoisonous: true,
+      aiInterval: 120
+    });
+    
+    this.poisonTimer = 0;
+  }
+
+  updateAI() {
+    super.updateAI();
+    
+    this.vx = this.direction * this.speed;
+    
+    // 定期的に毒を撒く
+    this.poisonTimer++;
+    if (this.poisonTimer >= this.aiInterval) {
+      this.poisonTimer = 0;
+      this.spawnPoison();
+    }
+  }
+
+  spawnPoison() {
+    // 毒雲を生成
+    const poison = {
+      x: this.x + this.width / 2,
+      y: this.y + this.height / 2,
+      vx: 0,
+      vy: -0.5,
+      life: 60,
+      color: '#9370DB',
+      size: 8,
+      damage: 1,
+      type: 'poison'
+    };
+    
+    if (this.game.particles) {
+      this.game.particles.push(poison);
+    }
+  }
+
+  draw(ctx) {
+    super.draw(ctx);
+    
+    // 毒のオーラ描画
+    if (!this.isDying && this.isAlive) {
+      ctx.save();
+      ctx.globalAlpha = 0.3 + Math.sin(this.aiTimer * 0.1) * 0.2;
+      ctx.fillStyle = this.color;
+      ctx.beginPath();
+      ctx.arc(
+        this.x + this.width / 2,
+        this.y + this.height / 2,
+        this.width / 2 + 8,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
+// 🕷️ 病原体 - HP1, 壁を登る
+class Pathogen extends BaseEnemy {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      width: 28,
+      height: 28,
+      hp: 1,
+      vx: -1.5,
+      vy: 0,
+      speed: 1.5,
+      gravity: 0,
+      type: 'virus',
+      emoji: '🕷️',
+      color: '#8B0000',
+      scoreValue: 180,
+      muscleReward: 15,
+      fatPenalty: 5,
+      canBeStomped: true,
+      canClimbWalls: true
+    });
+    
+    this.climbState = 'ground'; // 'ground', 'wall', 'ceiling'
+    this.climbDirection = 1; // 1: 上, -1: 下
+  }
+
+  updateAI() {
+    super.updateAI();
+    
+    // 壁を這う動き
+    switch (this.climbState) {
+      case 'ground':
+        this.vx = this.direction * this.speed;
+        this.vy = 0;
+        break;
+      case 'wall':
+        this.vx = 0;
+        this.vy = this.climbDirection * this.speed;
+        break;
+      case 'ceiling':
+        this.vx = -this.direction * this.speed;
+        this.vy = 0;
+        break;
+    }
+  }
+
+  checkCollisions() {
+    const canvas = this.game.canvas || {width:800, height:600};
+    const margin = 50;
+    
+    // 地面
+    if (this.y + this.height >= canvas.height - margin && this.climbState === 'ground') {
+      this.y = canvas.height - margin - this.height;
+      this.onGround = true;
+    }
+    
+    // 壁に到達したら登り始める
+    if (this.x <= 0 && this.climbState === 'ground') {
+      this.climbState = 'wall';
+      this.climbDirection = -1; // 上に登る
+    }
+    
+    // 天井に到達
+    if (this.y <= margin && this.climbState === 'wall') {
+      this.climbState = 'ceiling';
+    }
+    
+    // 天井から壁へ
+    if (this.x + this.width >= canvas.width && this.climbState === 'ceiling') {
+      this.climbState = 'wall';
+      this.climbDirection = 1; // 下に降りる
+    }
+    
+    // 壁から地面へ
+    if (this.y + this.height >= canvas.height - margin && this.climbState === 'wall') {
+      this.climbState = 'ground';
+    }
+  }
+}
+
+// 💀 腐敗菌 - HP3, プレイヤーを追跡
+class DecayGerm extends BaseEnemy {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      width: 34,
+      height: 34,
+      hp: 3,
+      vx: 0,
+      vy: 0,
+      speed: 1.2,
+      gravity: 0.3,
+      type: 'virus',
+      emoji: '💀',
+      color: '#2F4F2F',
+      scoreValue: 400,
+      muscleReward: 15,
+      fatPenalty: 8,
+      canBeStomped: true,
+      aiInterval: 20
+    });
+    
+    this.trackingSpeed = 0.1; // 追跡の滑らかさ
+  }
+
+  updateAI() {
+    super.updateAI();
+    
+    // プレイヤーを追跡
+    if (this.game.player && this.aiTimer % 10 === 0) {
+      const dx = this.game.player.x - this.x;
+      const dy = this.game.player.y - this.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      if (distance > 10) {
+        // プレイヤー方向へ移動
+        const targetVx = (dx / distance) * this.speed;
+        const targetVy = (dy / distance) * this.speed * 0.3; // 縦方向は弱め
+        
+        // 滑らかに加速
+        this.vx += (targetVx - this.vx) * this.trackingSpeed;
+        this.vy += (targetVy - this.vy) * this.trackingSpeed;
+        
+        // 方向更新
+        this.direction = this.vx > 0 ? 1 : -1;
+      }
+    }
+    
+    // 速度制限
+    const maxSpeed = this.speed * 1.5;
+    const currentSpeed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+    if (currentSpeed > maxSpeed) {
+      this.vx = (this.vx / currentSpeed) * maxSpeed;
+      this.vy = (this.vy / currentSpeed) * maxSpeed;
+    }
+  }
+
+  draw(ctx) {
+    super.draw(ctx);
+    
+    // 追跡オーラ描画
+    if (!this.isDying && this.isAlive && this.game.player) {
+      const dx = this.game.player.x - this.x;
+      const dy = this.game.player.y - this.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      if (distance < 200) {
+        ctx.save();
+        ctx.globalAlpha = 0.2;
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(this.x + this.width / 2, this.y + this.height / 2);
+        ctx.lineTo(this.game.player.x + this.game.player.width / 2, this.game.player.y + this.game.player.height / 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+}
+
+/**
+ * EnemyManager.js
+ * 敵の生成・管理システム
+ */
+
+class EnemyManager {
+  constructor(game) {
+    this.game = game;
+    this.enemies = [];
+    this.spawnTimer = 0;
+    this.spawnInterval = 180; // 3秒ごとにスポーン
+    this.maxEnemies = 10;
+    
+    // 敵の種類別の生成確率
+    this.enemyTypes = [
+      { class: Hamburger, weight: 15 },
+      { class: FrenchFries, weight: 12 },
+      { class: Pizza, weight: 8 },
+      { class: Donut, weight: 12 },
+      { class: Soda, weight: 10 },
+      { class: Virus, weight: 12 },
+      { class: Bacteria, weight: 8 },
+      { class: PoisonMushroom, weight: 5 },
+      { class: Pathogen, weight: 10 },
+      { class: DecayGerm, weight: 8 }
+    ];
+    
+    // 重みの合計を計算
+    this.totalWeight = this.enemyTypes.reduce((sum, type) => sum + type.weight, 0);
+  }
+
+  /**
+   * 更新処理
+   */
+  update() {
+    // 敵のスポーン
+    this.spawnTimer++;
+    if (this.spawnTimer >= this.spawnInterval && this.enemies.length < this.maxEnemies) {
+      this.spawnTimer = 0;
+      this.spawnRandomEnemy();
+    }
+    
+    // 全敵の更新
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const enemy = this.enemies[i];
+      enemy.update();
+      
+      // 死んだ敵を削除
+      if (!enemy.isAlive) {
+        this.enemies.splice(i, 1);
+      }
+    }
+  }
+
+  /**
+   * ランダムな敵を生成
+   */
+  spawnRandomEnemy() {
+    // 重み付きランダム選択
+    let random = Math.random() * this.totalWeight;
+    let selectedType = this.enemyTypes[0];
+    
+    for (const type of this.enemyTypes) {
+      random -= type.weight;
+      if (random <= 0) {
+        selectedType = type;
+        break;
+      }
+    }
+    
+    // スポーン位置を決定
+    const spawnX = this.game.canvas.width + 50;
+    const spawnY = Math.random() * (this.game.canvas.height - 200) + 50;
+    
+    // 敵を生成
+    const enemy = new selectedType.class(this.game, spawnX, spawnY);
+    this.enemies.push(enemy);
+  }
+
+  /**
+   * 特定の敵を生成
+   */
+  spawnEnemy(EnemyClass, x, y) {
+    const enemy = new EnemyClass(this.game, x, y);
+    this.enemies.push(enemy);
+    return enemy;
+  }
+
+  /**
+   * プレイヤーとの衝突チェック
+   */
+  checkPlayerCollisions(player) {
+    for (const enemy of this.enemies) {
+      const collisionType = enemy.checkPlayerCollision(player);
+      
+      if (collisionType === 'stomp') {
+        enemy.onStomped(player);
+      } else if (collisionType === 'touch') {
+        enemy.onTouched(player);
+      }
+    }
+  }
+
+  /**
+   * 鉄アレイとの衝突チェック
+   */
+  checkDumbbellCollisions(dumbbells) {
+    for (const dumbbell of dumbbells) {
+      if (!dumbbell.active) continue;
+      
+      for (const enemy of this.enemies) {
+        if (!enemy.isAlive || enemy.isDying) continue;
+        
+        // 衝突判定
+        if (this.boxCollision(dumbbell, enemy)) {
+          enemy.onHitByDumbbell(dumbbell);
+          dumbbell.active = false;
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * 矩形衝突判定
+   */
+  boxCollision(obj1, obj2) {
+    return obj1.x < obj2.x + obj2.width &&
+           obj1.x + obj1.width > obj2.x &&
+           obj1.y < obj2.y + obj2.height &&
+           obj1.y + obj1.height > obj2.y;
+  }
+
+  /**
+   * 全敵を描画
+   */
+  draw(ctx) {
+    for (const enemy of this.enemies) {
+      enemy.draw(ctx);
+      
+      if (this.game.debug) {
+        enemy.drawDebug(ctx);
+      }
+    }
+  }
+
+  /**
+   * 全敵をクリア
+   */
+  clear() {
+    this.enemies = [];
+  }
+
+  /**
+   * 指定範囲内の敵を取得
+   */
+  getEnemiesInRange(x, y, range) {
+    return this.enemies.filter(enemy => {
+      if (!enemy.isAlive || enemy.isDying) return false;
+      
+      const dx = enemy.x + enemy.width / 2 - x;
+      const dy = enemy.y + enemy.height / 2 - y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      return distance <= range;
+    });
+  }
+
+  /**
+   * 敵の数を取得
+   */
+  getCount() {
+    return this.enemies.filter(e => e.isAlive && !e.isDying).length;
+  }
+}
+
+/**
+ * ParticleSystem.js
+ * パーティクル効果システム
+ */
+
+class ParticleSystem {
+  constructor(game) {
+    this.game = game;
+    this.particles = [];
+  }
+
+  /**
+   * 更新処理
+   */
+  update() {
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      const particle = this.particles[i];
+      
+      // 位置更新
+      particle.x += particle.vx;
+      particle.y += particle.vy;
+      
+      // 重力適用
+      if (particle.gravity !== false) {
+        particle.vy += 0.2;
+      }
+      
+      // 寿命減少
+      particle.life--;
+      
+      // 削除判定
+      if (particle.life <= 0) {
+        this.particles.splice(i, 1);
+      }
+    }
+  }
+
+  /**
+   * パーティクル追加
+   */
+  add(particle) {
+    this.particles.push(particle);
+  }
+
+  /**
+   * 爆発エフェクト
+   */
+  createExplosion(x, y, color = '#ff0000', count = 12) {
+    for (let i = 0; i < count; i++) {
+      const angle = (Math.PI * 2 * i) / count;
+      const speed = 2 + Math.random() * 3;
+      
+      this.add({
+        x: x,
+        y: y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 2,
+        life: 30 + Math.random() * 20,
+        color: color,
+        size: 3 + Math.random() * 3,
+        gravity: true
+      });
+    }
+  }
+
+  /**
+   * コイン取得エフェクト
+   */
+  createCoinEffect(x, y) {
+    for (let i = 0; i < 8; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 1 + Math.random() * 2;
+      
+      this.add({
+        x: x,
+        y: y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 3,
+        life: 20,
+        color: '#FFD700',
+        size: 4,
+        gravity: true
+      });
+    }
+  }
+
+  /**
+   * ジャンプ着地エフェクト
+   */
+  createLandingEffect(x, y, width) {
+    for (let i = 0; i < 6; i++) {
+      this.add({
+        x: x + Math.random() * width,
+        y: y,
+        vx: (Math.random() - 0.5) * 3,
+        vy: -Math.random() * 2,
+        life: 15,
+        color: '#888888',
+        size: 2,
+        gravity: true
+      });
+    }
+  }
+
+  /**
+   * 毒エフェクト
+   */
+  createPoisonCloud(x, y) {
+    for (let i = 0; i < 5; i++) {
+      this.add({
+        x: x + (Math.random() - 0.5) * 20,
+        y: y + (Math.random() - 0.5) * 20,
+        vx: (Math.random() - 0.5) * 0.5,
+        vy: -0.5 - Math.random() * 0.5,
+        life: 60,
+        color: '#9370DB',
+        size: 6 + Math.random() * 4,
+        gravity: false,
+        type: 'poison'
+      });
+    }
+  }
+
+  /**
+   * 描画処理
+   */
+  draw(ctx) {
+    for (const particle of this.particles) {
+      ctx.save();
+      
+      // フェードアウト
+      const alpha = particle.life / 30;
+      ctx.globalAlpha = Math.min(alpha, 1);
+      
+      ctx.fillStyle = particle.color;
+      
+      if (particle.type === 'poison') {
+        // 毒は円形でぼかし効果
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = particle.color;
+      }
+      
+      ctx.beginPath();
+      ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.restore();
+    }
+  }
+
+  /**
+   * プレイヤーとの毒衝突チェック
+   */
+  checkPoisonCollisions(player) {
+    if (player.isInvincible) return;
+    
+    for (const particle of this.particles) {
+      if (particle.type !== 'poison') continue;
+      
+      const dx = particle.x - (player.x + player.width / 2);
+      const dy = particle.y - (player.y + player.height / 2);
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      if (distance < player.width / 2 + particle.size) {
+        player.takeDamage(1);
+        particle.life = 0; // パーティクル削除
+      }
+    }
+  }
+
+  /**
+   * 全パーティクルをクリア
+   */
+  clear() {
+    this.particles = [];
+  }
+
+  /**
+   * パーティクル数を取得
+   */
+  getCount() {
+    return this.particles.length;
+  }
+}
+
+/**
+ * BaseItem.js
+ * アイテムの基底クラス
+ */
+
+class BaseItem {
+  constructor(game, x, y, config = {}) {
+    this.game = game;
+    this.x = x;
+    this.y = y;
+    
+    // 基本設定
+    this.width = config.width || 24;
+    this.height = config.height || 24;
+    
+    // 移動関連
+    this.vx = config.vx || 0;
+    this.vy = config.vy || 0;
+    this.gravity = config.gravity !== undefined ? config.gravity : 0.3;
+    this.bounce = config.bounce || 0.5;
+    this.onGround = false;
+    
+    // アイテム効果
+    this.scoreValue = config.scoreValue || 10;
+    this.muscleBonus = config.muscleBonus || 0;
+    this.fatChange = config.fatChange || 0;
+    
+    // 特殊効果
+    this.specialEffect = config.specialEffect || null;
+    
+    // 状態管理
+    this.isActive = true;
+    this.isCollected = false;
+    this.collectedTimer = 0;
+    this.collectedDuration = 20;
+    
+    // 見た目
+    this.emoji = config.emoji || '⭐';
+    this.color = config.color || '#FFD700';
+    
+    // アニメーション
+    this.animTimer = 0;
+    this.floatOffset = Math.random() * Math.PI * 2;
+    
+    // ブロックから出現
+    if (config.fromBlock) {
+      this.vy = -8;
+      this.vx = (Math.random() - 0.5) * 2;
+    }
+  }
+
+  update() {
+    if (!this.isActive) return;
+    
+    if (this.isCollected) {
+      this.updateCollected();
+      return;
+    }
+    
+    this.animTimer++;
+    this.updatePhysics();
+    this.checkPlayerCollision();
+    this.checkOutOfBounds();
+  }
+
+  updatePhysics() {
+    if (!this.onGround) {
+      this.vy += this.gravity;
+      this.vy = Math.min(this.vy, 10);
+    }
+    
+    this.x += this.vx;
+    this.y += this.vy;
+    
+    if (this.onGround) {
+      this.vx *= 0.9;
+    }
+    
+    this.onGround = false;
+    
+    const groundY = this.game.canvas.height - 50 - this.height;
+    if (this.y >= groundY) {
+      this.y = groundY;
+      this.vy = -this.vy * this.bounce;
+      
+      if (Math.abs(this.vy) < 1) {
+        this.vy = 0;
+        this.onGround = true;
+      }
+    }
+    
+    if (this.x < 0) {
+      this.x = 0;
+      this.vx = -this.vx * 0.5;
+    }
+    if (this.x + this.width > this.game.canvas.width) {
+      this.x = this.game.canvas.width - this.width;
+      this.vx = -this.vx * 0.5;
+    }
+  }
+
+  checkPlayerCollision() {
+    if (!this.game.player) return;
+    
+    const player = this.game.player;
+    
+    if (this.boxCollision(
+      { x: this.x, y: this.y, width: this.width, height: this.height },
+      { x: player.x, y: player.y, width: player.width, height: player.height }
+    )) {
+      this.collect(player);
+    }
+  }
+
+  boxCollision(box1, box2) {
+    return box1.x < box2.x + box2.width &&
+           box1.x + box1.width > box2.x &&
+           box1.y < box2.y + box2.height &&
+           box1.y + box1.height > box2.y;
+  }
+
+  collect(player) {
+    if (this.isCollected) return;
+    
+    this.isCollected = true;
+    this.collectedTimer = 0;
+    
+    this.applyEffect(player);
+    this.createCollectEffect();
+    
+    console.log(`${this.emoji} アイテム取得！`);
+  }
+
+  applyEffect(player) {
+    if (this.scoreValue > 0) {
+      this.game.addScore(this.scoreValue);
+    }
+    
+    if (this.muscleBonus !== 0) {
+      player.addMuscle(this.muscleBonus);
+    }
+    
+    if (this.fatChange !== 0) {
+      player.addFat(this.fatChange);
+    }
+    
+    if (this.specialEffect) {
+      this.specialEffect(player, this.game);
+    }
+  }
+
+  updateCollected() {
+    this.collectedTimer++;
+    
+    if (this.game.player) {
+      const dx = this.game.player.x + this.game.player.width / 2 - (this.x + this.width / 2);
+      const dy = this.game.player.y + this.game.player.height / 2 - (this.y + this.height / 2);
+      
+      this.x += dx * 0.3;
+      this.y += dy * 0.3;
+    }
+    
+    if (this.collectedTimer >= this.collectedDuration) {
+      this.isActive = false;
+    }
+  }
+
+  createCollectEffect() {
+    if (!this.game.particleSystem) return;
+    
+    const particleCount = 8;
+    for (let i = 0; i < particleCount; i++) {
+      const angle = (Math.PI * 2 * i) / particleCount;
+      const speed = 2 + Math.random() * 2;
+      
+      this.game.particleSystem.add({
+        x: this.x + this.width / 2,
+        y: this.y + this.height / 2,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 2,
+        life: 25,
+        color: this.color,
+        size: 4,
+        gravity: true
+      });
+    }
+  }
+
+  checkOutOfBounds() {
+    const buffer = 100;
+    if (this.y > this.game.canvas.height + buffer) {
+      this.isActive = false;
+    }
+  }
+
+  draw(ctx) {
+    if (!this.isActive) return;
+    
+    ctx.save();
+    
+    if (this.isCollected) {
+      const scale = 1 - (this.collectedTimer / this.collectedDuration);
+      ctx.globalAlpha = scale;
+      
+      const centerX = this.x + this.width / 2;
+      const centerY = this.y + this.height / 2;
+      
+      ctx.translate(centerX, centerY);
+      ctx.scale(scale, scale);
+      ctx.translate(-centerX, -centerY);
+    } else {
+      const floatY = Math.sin(this.animTimer * 0.1 + this.floatOffset) * 3;
+      ctx.translate(0, floatY);
+    }
+    
+    ctx.font = `${this.height}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(this.emoji, this.x + this.width / 2, this.y + this.height / 2);
+    
+    ctx.restore();
+    
+    if (this.game.debug && !this.isCollected) {
+      ctx.strokeStyle = '#00ff00';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(this.x, this.y, this.width, this.height);
+    }
+  }
+}
+
+/**
+ * Items.js
+ * ゲーム内アイテム5種類
+ */
+
+// 🪙 コイン - スコア+10
+class Coin extends BaseItem {
+  constructor(game, x, y, fromBlock = false) {
+    super(game, x, y, {
+      width: 20,
+      height: 20,
+      scoreValue: 10,
+      muscleBonus: 0,
+      fatChange: 0,
+      emoji: '🪙',
+      color: '#FFD700',
+      bounce: 0.3,
+      fromBlock: fromBlock
+    });
+    
+    this.rotationSpeed = 0.1;
+    this.rotation = 0;
+  }
+
+  update() {
+    super.update();
+    
+    // 回転アニメーション
+    if (!this.isCollected) {
+      this.rotation += this.rotationSpeed;
+    }
+  }
+
+  draw(ctx) {
+    if (!this.isActive) return;
+    
+    ctx.save();
+    
+    if (this.isCollected) {
+      const scale = 1 - (this.collectedTimer / this.collectedDuration);
+      ctx.globalAlpha = scale;
+    } else {
+      const floatY = Math.sin(this.animTimer * 0.1 + this.floatOffset) * 3;
+      ctx.translate(0, floatY);
+    }
+    
+    // 回転中心に移動
+    ctx.translate(this.x + this.width / 2, this.y + this.height / 2);
+    
+    // Y軸周りの回転を模擬（横に潰す）
+    const scaleX = Math.abs(Math.cos(this.rotation));
+    ctx.scale(scaleX, 1);
+    
+    // 絵文字描画
+    ctx.font = `${this.height}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(this.emoji, 0, 0);
+    
+    ctx.restore();
+  }
+}
+
+// 🏋️ 鉄アレイ - MUSCLE+15, FAT-5, スコア+50, 所持数+1（投擲可能）
+class Dumbbell extends BaseItem {
+  constructor(game, x, y, fromBlock = false) {
+    super(game, x, y, {
+      width: 28,
+      height: 28,
+      scoreValue: 50,
+      muscleBonus: 15,
+      fatChange: -5,
+      emoji: '🏋️',
+      color: '#C0C0C0',
+      bounce: 0.4,
+      fromBlock: fromBlock,
+      specialEffect: (player, game) => {
+        // 所持数+1
+        if (player.dumbbells !== undefined) {
+          player.dumbbells++;
+        } else {
+          player.dumbbells = 1;
+        }
+        
+        // UI更新
+        if (game.updateDumbbellUI) {
+          game.updateDumbbellUI();
+        }
+        
+        console.log(`鉄アレイ所持数: ${player.dumbbells}`);
+      }
+    });
+  }
+
+  createCollectEffect() {
+    super.createCollectEffect();
+    
+    // 筋肉エフェクト追加
+    if (this.game.particleSystem) {
+      for (let i = 0; i < 5; i++) {
+        this.game.particleSystem.add({
+          x: this.x + this.width / 2,
+          y: this.y + this.height / 2,
+          vx: (Math.random() - 0.5) * 4,
+          vy: -Math.random() * 4,
+          life: 30,
+          color: '#ff0000',
+          size: 6,
+          gravity: true
+        });
+      }
+    }
+  }
+}
+
+// 🥤 プロテイン - MUSCLE+25, FAT-10, スコア+100
+class Protein extends BaseItem {
+  constructor(game, x, y, fromBlock = false) {
+    super(game, x, y, {
+      width: 26,
+      height: 30,
+      scoreValue: 100,
+      muscleBonus: 25,
+      fatChange: -10,
+      emoji: '🥤',
+      color: '#FF69B4',
+      bounce: 0.5,
+      fromBlock: fromBlock
+    });
+  }
+
+  createCollectEffect() {
+    super.createCollectEffect();
+    
+    // プロテインパワーエフェクト
+    if (this.game.particleSystem) {
+      for (let i = 0; i < 10; i++) {
+        const angle = (Math.PI * 2 * i) / 10;
+        const speed = 3;
+        
+        this.game.particleSystem.add({
+          x: this.x + this.width / 2,
+          y: this.y + this.height / 2,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - 3,
+          life: 35,
+          color: '#FF69B4',
+          size: 8,
+          gravity: true
+        });
+      }
+    }
+  }
+}
+
+// 💪 ジムギア - MUSCLE+20, FAT-8, スコア+80
+class GymGear extends BaseItem {
+  constructor(game, x, y, fromBlock = false) {
+    super(game, x, y, {
+      width: 28,
+      height: 28,
+      scoreValue: 80,
+      muscleBonus: 20,
+      fatChange: -8,
+      emoji: '💪',
+      color: '#FFA500',
+      bounce: 0.4,
+      fromBlock: fromBlock
+    });
+    
+    this.pulseTimer = 0;
+  }
+
+  update() {
+    super.update();
+    
+    // 脈動アニメーション
+    if (!this.isCollected) {
+      this.pulseTimer++;
+    }
+  }
+
+  draw(ctx) {
+    if (!this.isActive) return;
+    
+    ctx.save();
+    
+    if (this.isCollected) {
+      const scale = 1 - (this.collectedTimer / this.collectedDuration);
+      ctx.globalAlpha = scale;
+    } else {
+      const floatY = Math.sin(this.animTimer * 0.1 + this.floatOffset) * 3;
+      ctx.translate(0, floatY);
+      
+      // 脈動エフェクト
+      const pulse = 1 + Math.sin(this.pulseTimer * 0.15) * 0.15;
+      ctx.translate(this.x + this.width / 2, this.y + this.height / 2);
+      ctx.scale(pulse, pulse);
+      ctx.translate(-(this.x + this.width / 2), -(this.y + this.height / 2));
+    }
+    
+    ctx.font = `${this.height}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(this.emoji, this.x + this.width / 2, this.y + this.height / 2);
+    
+    ctx.restore();
+  }
+
+  createCollectEffect() {
+    super.createCollectEffect();
+    
+    // ジムギアエフェクト
+    if (this.game.particleSystem) {
+      for (let i = 0; i < 8; i++) {
+        const angle = (Math.PI * 2 * i) / 8;
+        const speed = 2.5;
+        
+        this.game.particleSystem.add({
+          x: this.x + this.width / 2,
+          y: this.y + this.height / 2,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - 2,
+          life: 30,
+          color: '#FFA500',
+          size: 7,
+          gravity: true
+        });
+      }
+    }
+  }
+}
+
+// 🔑 鍵 - 隠しステージ解放, スコア+500
+class Key extends BaseItem {
+  constructor(game, x, y, fromBlock = false) {
+    super(game, x, y, {
+      width: 24,
+      height: 28,
+      scoreValue: 500,
+      muscleBonus: 0,
+      fatChange: 0,
+      emoji: '🔑',
+      color: '#FFD700',
+      bounce: 0.3,
+      fromBlock: fromBlock,
+      specialEffect: (player, game) => {
+        // 隠しステージ解放
+        if (game.unlockedHiddenStage !== undefined) {
+          game.unlockedHiddenStage = true;
+        } else {
+          game.unlockedHiddenStage = true;
+        }
+        
+        console.log('🎉 隠しステージが解放されました！');
+        
+        // 特別なエフェクト
+        if (game.particleSystem) {
+          for (let i = 0; i < 30; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 4 + Math.random() * 4;
+            
+            game.particleSystem.add({
+              x: player.x + player.width / 2,
+              y: player.y + player.height / 2,
+              vx: Math.cos(angle) * speed,
+              vy: Math.sin(angle) * speed - 5,
+              life: 50,
+              color: ['#FFD700', '#FFA500', '#FFFF00'][Math.floor(Math.random() * 3)],
+              size: 8,
+              gravity: true
+            });
+          }
+        }
+      }
+    });
+    
+    this.sparkleTimer = 0;
+  }
+
+  update() {
+    super.update();
+    
+    // キラキラエフェクト生成
+    if (!this.isCollected) {
+      this.sparkleTimer++;
+      
+      if (this.sparkleTimer % 15 === 0 && this.game.particleSystem) {
+        this.game.particleSystem.add({
+          x: this.x + Math.random() * this.width,
+          y: this.y + Math.random() * this.height,
+          vx: (Math.random() - 0.5) * 2,
+          vy: -Math.random() * 2,
+          life: 20,
+          color: '#FFFF00',
+          size: 3,
+          gravity: false
+        });
+      }
+    }
+  }
+
+  draw(ctx) {
+    if (!this.isActive) return;
+    
+    ctx.save();
+    
+    if (this.isCollected) {
+      const scale = 1 - (this.collectedTimer / this.collectedDuration);
+      ctx.globalAlpha = scale;
+    } else {
+      const floatY = Math.sin(this.animTimer * 0.1 + this.floatOffset) * 4;
+      ctx.translate(0, floatY);
+      
+      // 発光エフェクト
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = '#FFD700';
+    }
+    
+    ctx.font = `${this.height}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(this.emoji, this.x + this.width / 2, this.y + this.height / 2);
+    
+    ctx.restore();
+  }
+
+  createCollectEffect() {
+    super.createCollectEffect();
+    
+    // 豪華な鍵取得エフェクト
+    if (this.game.particleSystem) {
+      // 大量のキラキラ
+      for (let i = 0; i < 20; i++) {
+        const angle = (Math.PI * 2 * i) / 20;
+        const speed = 3 + Math.random() * 3;
+        
+        this.game.particleSystem.add({
+          x: this.x + this.width / 2,
+          y: this.y + this.height / 2,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - 4,
+          life: 45,
+          color: '#FFD700',
+          size: 10,
+          gravity: true
+        });
+      }
+    }
+  }
+}
+
+/**
+ * ItemManager.js
+ * アイテムの生成・管理システム
+ */
+
+class ItemManager {
+  constructor(game) {
+    this.game = game;
+    this.items = [];
+    
+    // アイテムクラスのマッピング
+    this.itemClasses = {
+      'coin': Coin,
+      'dumbbell': Dumbbell,
+      'protein': Protein,
+      'gymgear': GymGear,
+      'key': Key
+    };
+  }
+
+  /**
+   * 更新処理
+   */
+  update() {
+    // 全アイテムの更新
+    for (let i = this.items.length - 1; i >= 0; i--) {
+      const item = this.items[i];
+      item.update();
+      
+      // 非アクティブなアイテムを削除
+      if (!item.isActive) {
+        this.items.splice(i, 1);
+      }
+    }
+  }
+
+  /**
+   * アイテムを生成
+   */
+  spawnItem(itemType, x, y, fromBlock = false) {
+    const ItemClass = this.itemClasses[itemType];
+    
+    if (!ItemClass) {
+      console.error(`Unknown item type: ${itemType}`);
+      return null;
+    }
+    
+    const item = new ItemClass(this.game, x, y, fromBlock);
+    this.items.push(item);
+    
+    return item;
+  }
+
+  /**
+   * 複数アイテムを一度に生成（ボス撃破時など）
+   */
+  spawnMultipleItems(itemList, centerX, centerY) {
+    const totalItems = itemList.reduce((sum, item) => sum + item.count, 0);
+    let currentIndex = 0;
+    
+    itemList.forEach(itemData => {
+      for (let i = 0; i < itemData.count; i++) {
+        // 円形に配置
+        const angle = (Math.PI * 2 * currentIndex) / totalItems;
+        const distance = 40 + Math.random() * 30;
+        
+        const spawnX = centerX + Math.cos(angle) * distance;
+        const spawnY = centerY + Math.sin(angle) * distance;
+        
+        // アイテム生成
+        setTimeout(() => {
+          this.spawnItem(itemData.type, spawnX, spawnY, true);
+        }, currentIndex * 50); // 時間差で生成
+        
+        currentIndex++;
+      }
+    });
+  }
+
+  /**
+   * ランダムなアイテムを生成
+   */
+  spawnRandomItem(x, y, fromBlock = false) {
+    const itemTypes = ['coin', 'dumbbell', 'protein', 'gymgear'];
+    const weights = [50, 25, 15, 10]; // コインが50%、鉄アレイが25%...
+    
+    const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+    let random = Math.random() * totalWeight;
+    
+    for (let i = 0; i < itemTypes.length; i++) {
+      random -= weights[i];
+      if (random <= 0) {
+        return this.spawnItem(itemTypes[i], x, y, fromBlock);
+      }
+    }
+    
+    // フォールバック
+    return this.spawnItem('coin', x, y, fromBlock);
+  }
+
+  /**
+   * プレイヤーとの衝突チェック
+   */
+  checkPlayerCollisions(player) {
+    for (const item of this.items) {
+      if (item.checkPlayerCollision && item.checkPlayerCollision(player)) {
+        item.collect(player);
+      }
+    }
+  }
+
+  /**
+   * 複数アイテム生成（ボスドロップ用 - 互換性のため）
+   */
+  spawnItems(itemData) {
+    itemData.forEach((data, index) => {
+      const ItemClass = this.getItemClass(data.type);
+      if (!ItemClass) return;
+      
+      for (let i = 0; i < data.count; i++) {
+        const totalItems = itemData.reduce((sum, d) => sum + d.count, 0);
+        const itemIndex = index * data.count + i;
+        const angle = (Math.PI * 2 * itemIndex) / totalItems;
+        const distance = 60 + Math.random() * 40;
+        
+        const spawnX = data.x + Math.cos(angle) * distance;
+        const spawnY = data.y + Math.sin(angle) * distance;
+        
+        const item = new ItemClass(this.game, spawnX, spawnY);
+        item.vx = Math.cos(angle) * 3;
+        item.vy = Math.sin(angle) * 3 - 5;
+        
+        this.items.push(item);
+      }
+    });
+  }
+
+  /**
+   * アイテムタイプからクラスを取得
+   */
+  getItemClass(itemType) {
+    return this.itemClasses[itemType];
+  }
+
+  /**
+   * 描画処理
+   */
+  draw(ctx) {
+    for (const item of this.items) {
+      item.draw(ctx);
+    }
+  }
+
+  /**
+   * 全アイテムをクリア
+   */
+  clear() {
+    this.items = [];
+  }
+
+  /**
+   * アイテム数を取得
+   */
+  getCount() {
+    return this.items.length;
+  }
+
+  /**
+   * 特定のアイテムタイプの数を取得
+   */
+  getCountByType(itemType) {
+    return this.items.filter(item => 
+      item.constructor.name.toLowerCase().includes(itemType.toLowerCase())
+    ).length;
+  }
+}
+
+/**
+ * DumbbellProjectile.js
+ * 投擲された鉄アレイの弾
+ */
+
+class DumbbellProjectile {
+  constructor(game, x, y, direction) {
+    this.game = game;
+    this.x = x;
+    this.y = y;
+    this.width = 24;
+    this.height = 24;
+    
+    this.direction = direction; // -1: 左, 1: 右
+    this.vx = direction * 8;
+    this.vy = -2;
+    this.gravity = 0.3;
+    
+    this.rotation = 0;
+    this.rotationSpeed = 0.3;
+    
+    this.active = true;
+    this.damage = 1;
+    
+    this.emoji = '🏋️';
+  }
+
+  update() {
+    if (!this.active) return;
+    
+    // 物理演算
+    this.vy += this.gravity;
+    this.x += this.vx;
+    this.y += this.vy;
+    
+    // 回転
+    this.rotation += this.rotationSpeed * this.direction;
+    
+    // 画面外チェック
+    if (this.x < -50 || this.x > this.game.canvas.width + 50 ||
+        this.y > this.game.canvas.height + 50) {
+      this.active = false;
+    }
+  }
+
+  draw(ctx) {
+    if (!this.active) return;
+    
+    ctx.save();
+    
+    // 回転中心に移動
+    ctx.translate(this.x + this.width / 2, this.y + this.height / 2);
+    ctx.rotate(this.rotation);
+    
+    // 絵文字描画
+    ctx.font = `${this.height}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(this.emoji, 0, 0);
+    
+    ctx.restore();
+    
+    // デバッグ枠
+    if (this.game.debug) {
+      ctx.strokeStyle = '#ff0000';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(this.x, this.y, this.width, this.height);
+    }
+  }
+}
+
+/**
+ * BaseBlock.js
+ * ブロックの基底クラス
+ */
+
+class BaseBlock {
+  constructor(game, x, y, config = {}) {
+    this.game = game;
+    this.x = x;
+    this.y = y;
+    
+    this.width = config.width || 32;
+    this.height = config.height || 32;
+    
+    this.blockType = config.blockType || 'solid';
+    
+    this.isBreakable = config.isBreakable || false;
+    this.isPlatform = config.isPlatform || false;
+    this.isSolid = config.isSolid !== undefined ? config.isSolid : true;
+    
+    this.isActive = true;
+    this.isBroken = false;
+    this.breakTimer = 0;
+    this.breakDuration = 30;
+    
+    this.emoji = config.emoji || '🟫';
+    this.color = config.color || '#8B4513';
+    this.backgroundColor = config.backgroundColor || '#654321';
+    
+    this.animationTimer = 0;
+    this.originalY = y;
+  }
+
+  update() {
+    if (!this.isActive) return;
+    
+    if (this.isBroken) {
+      this.updateBreak();
+      return;
+    }
+    
+    this.updateAnimation();
+  }
+
+  updateAnimation() {
+    this.animationTimer++;
+  }
+
+  updateBreak() {
+    this.breakTimer++;
+    this.y -= 2;
+    
+    if (this.breakTimer >= this.breakDuration) {
+      this.isActive = false;
+    }
+  }
+
+  checkPlayerCollision(player) {
+    if (!this.isActive || this.isBroken || !this.isSolid) return null;
+    
+    const px = player.x, py = player.y, pw = player.width, ph = player.height;
+    const bx = this.x, by = this.y, bw = this.width, bh = this.height;
+    
+    if (px + pw <= bx || px >= bx + bw || py + ph <= by || py >= by + bh) {
+      return null;
+    }
+    
+    const overlapLeft = (px + pw) - bx;
+    const overlapRight = (bx + bw) - px;
+    const overlapTop = (py + ph) - by;
+    const overlapBottom = (by + bh) - py;
+    
+    const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+    
+    if (minOverlap === overlapTop && player.vy > 0) return 'top';
+    if (minOverlap === overlapBottom && player.vy < 0) return 'bottom';
+    if (minOverlap === overlapLeft && player.vx > 0) return 'left';
+    if (minOverlap === overlapRight && player.vx < 0) return 'right';
+    
+    return null;
+  }
+
+  onCollision(player, side) {
+    switch (side) {
+      case 'top': this.onPlayerLand(player); break;
+      case 'bottom': this.onPlayerHeadbutt(player); break;
+      case 'left':
+      case 'right': this.onPlayerSideTouch(player, side); break;
+    }
+  }
+
+  onPlayerLand(player) {
+    player.y = this.y - player.height;
+    player.vy = 0;
+    player.onGround = true;
+  }
+
+  onPlayerHeadbutt(player) {
+    player.y = this.y + this.height;
+    player.vy = 0;
+    
+    if (this.isBreakable && player.bodyType === 'MUSCLE') {
+      this.break();
+    }
+  }
+
+  onPlayerSideTouch(player, side) {
+    if (side === 'left') {
+      player.x = this.x - player.width;
+    } else {
+      player.x = this.x + this.width;
+    }
+    player.vx = 0;
+  }
+
+  break() {
+    this.isBroken = true;
+    this.breakTimer = 0;
+    this.isSolid = false;
+    
+    this.createBreakEffect();
+    
+    if (Math.random() < 0.7) {
+      this.dropItem();
+    }
+    
+    console.log('ブロック破壊！');
+  }
+
+  createBreakEffect() {
+    if (!this.game.particleSystem) return;
+    
+    for (let i = 0; i < 12; i++) {
+      const angle = (Math.PI * 2 * i) / 12;
+      const speed = 3 + Math.random() * 3;
+      
+      this.game.particleSystem.add({
+        x: this.x + this.width / 2,
+        y: this.y + this.height / 2,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 3,
+        life: 40,
+        color: this.color,
+        size: 4,
+        gravity: true
+      });
+    }
+  }
+
+  dropItem() {
+    if (!this.game.itemManager) return;
+    
+    const itemTypes = ['coin', 'dumbbell'];
+    const randomType = itemTypes[Math.floor(Math.random() * itemTypes.length)];
+    const ItemClass = this.game.itemManager.getItemClass(randomType);
+    
+    if (ItemClass) {
+      const item = this.game.itemManager.spawnItem(ItemClass, this.x + this.width / 2 - 12, this.y - 30);
+      item.vy = -5;
+    }
+  }
+
+  draw(ctx) {
+    if (!this.isActive) return;
+    
+    ctx.save();
+    
+    if (this.isBroken) {
+      ctx.globalAlpha = 1 - (this.breakTimer / this.breakDuration);
+    }
+    
+    ctx.fillStyle = this.backgroundColor;
+    ctx.fillRect(this.x, this.y, this.width, this.height);
+    
+    ctx.strokeStyle = this.color;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(this.x, this.y, this.width, this.height);
+    
+    if (this.emoji) {
+      ctx.font = `${this.height * 0.8}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(this.emoji, this.x + this.width / 2, this.y + this.height / 2);
+    }
+    
+    ctx.restore();
+  }
+
+  drawDebug(ctx) {
+    if (!this.game.debug || !this.isActive) return;
+    
+    ctx.strokeStyle = this.isSolid ? '#00ff00' : '#ffff00';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(this.x, this.y, this.width, this.height);
+  }
+}
+
+/**
+ * Blocks.js
+ * 基本ブロック3種類 + 追加ブロック6種類
+ */
+
+// === 基本ブロック ===
+
+// 1. 壊せないブロック
+class SolidBlock extends BaseBlock {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      blockType: 'solid',
+      emoji: '🟫',
+      color: '#8B4513',
+      backgroundColor: '#A0522D',
+      isBreakable: false
+    });
+  }
+}
+
+// 2. 壊せるブロック (MUSCLE体型で頭突きで破壊)
+class BreakableBlock extends BaseBlock {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      blockType: 'breakable',
+      emoji: '📦',
+      color: '#CD853F',
+      backgroundColor: '#DEB887',
+      isBreakable: true
+    });
+  }
+}
+
+// 3. 足場ブロック (下からすり抜け可能)
+class PlatformBlock extends BaseBlock {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      blockType: 'platform',
+      emoji: '━',
+      color: '#696969',
+      backgroundColor: '#808080',
+      isPlatform: true,
+      height: 8
+    });
+  }
+
+  checkPlayerCollision(player) {
+    if (!this.isActive || this.isBroken) return null;
+    
+    // プレイヤーが下から来ている場合はすり抜け
+    if (player.vy < 0) return null;
+    
+    // プレイヤーがブロックより上にいる場合のみ衝突
+    if (player.y + player.height > this.y + this.height) return null;
+    
+    const px = player.x, py = player.y, pw = player.width, ph = player.height;
+    const bx = this.x, by = this.y, bw = this.width;
+    
+    if (px + pw > bx && px < bx + bw && py + ph >= by && py + ph <= by + this.height + 10) {
+      return 'top';
+    }
+    
+    return null;
+  }
+}
+
+// === 追加ブロック ===
+
+// 4. ❓ ハテナブロック
+class QuestionBlock extends BaseBlock {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      blockType: 'question',
+      emoji: '❓',
+      color: '#FFD700',
+      backgroundColor: '#FFA500',
+      isBreakable: false
+    });
+    
+    this.hasItem = true;
+    this.bounceOffset = 0;
+    this.isBouncing = false;
+  }
+
+  updateAnimation() {
+    super.updateAnimation();
+    
+    // バウンドアニメーション
+    if (this.isBouncing) {
+      this.bounceOffset = Math.max(0, this.bounceOffset - 1);
+      this.y = this.originalY - this.bounceOffset;
+      
+      if (this.bounceOffset === 0) {
+        this.isBouncing = false;
+      }
+    }
+  }
+
+  onPlayerHeadbutt(player) {
+    super.onPlayerHeadbutt(player);
+    
+    if (this.hasItem) {
+      this.hasItem = false;
+      this.emoji = '□';
+      this.backgroundColor = '#888888';
+      
+      // バウンドアニメーション
+      this.isBouncing = true;
+      this.bounceOffset = 10;
+      
+      // アイテム出現
+      this.spawnRandomItem();
+    }
+  }
+
+  spawnRandomItem() {
+    if (!this.game.itemManager) return;
+    
+    const itemTypes = ['coin', 'dumbbell', 'protein', 'gymgear'];
+    const weights = [50, 30, 15, 5]; // 確率の重み
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    
+    let random = Math.random() * totalWeight;
+    let selectedType = itemTypes[0];
+    
+    for (let i = 0; i < itemTypes.length; i++) {
+      random -= weights[i];
+      if (random <= 0) {
+        selectedType = itemTypes[i];
+        break;
+      }
+    }
+    
+    const ItemClass = this.game.itemManager.getItemClass(selectedType);
+    if (ItemClass) {
+      const item = this.game.itemManager.spawnItem(ItemClass, this.x + this.width / 2 - 12, this.y - 30);
+      item.vy = -5;
+      console.log(`ハテナブロック: ${selectedType} 出現！`);
+    }
+  }
+}
+
+// 5. 🧊 氷ブロック
+class IceBlock extends BaseBlock {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      blockType: 'ice',
+      emoji: '🧊',
+      color: '#B0E0E6',
+      backgroundColor: '#E0FFFF',
+      isBreakable: false
+    });
+  }
+
+  onPlayerLand(player) {
+    super.onPlayerLand(player);
+    
+    // 摩擦を設定（FAT体型は滑りにくい）
+    player.friction = player.bodyType === 'FAT' ? 0.9 : 0.98;
+    player.onIce = true;
+  }
+
+  draw(ctx) {
+    super.draw(ctx);
+    
+    // 氷の光沢エフェクト
+    if (this.isActive && !this.isBroken) {
+      ctx.save();
+      ctx.globalAlpha = 0.3 + Math.sin(this.animationTimer * 0.1) * 0.2;
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(this.x + 2, this.y + 2, this.width - 4, 4);
+      ctx.restore();
+    }
+  }
+}
+
+// 6. 🌀 トランポリン
+class TrampolineBlock extends BaseBlock {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      blockType: 'trampoline',
+      emoji: '🌀',
+      color: '#FF69B4',
+      backgroundColor: '#FFB6C1',
+      isBreakable: false
+    });
+    
+    this.bounceOffset = 0;
+    this.isBouncing = false;
+  }
+
+  updateAnimation() {
+    super.updateAnimation();
+    
+    // バウンドアニメーション
+    if (this.isBouncing) {
+      this.bounceOffset = Math.max(0, this.bounceOffset - 1);
+      if (this.bounceOffset === 0) {
+        this.isBouncing = false;
+      }
+    }
+  }
+
+  onPlayerLand(player) {
+    // 超高ジャンプ
+    player.y = this.y - player.height;
+    player.vy = -20;
+    player.onGround = false;
+    
+    // バウンドアニメーション
+    this.isBouncing = true;
+    this.bounceOffset = 8;
+    
+    console.log('トランポリンで超ジャンプ！');
+  }
+
+  draw(ctx) {
+    ctx.save();
+    
+    // バウンド時に圧縮される
+    const squash = this.isBouncing ? 1 - (this.bounceOffset / 16) : 1;
+    
+    ctx.translate(this.x + this.width / 2, this.y + this.height);
+    ctx.scale(1 + (1 - squash) * 0.2, squash);
+    ctx.translate(-(this.x + this.width / 2), -(this.y + this.height));
+    
+    super.draw(ctx);
+    
+    ctx.restore();
+  }
+}
+
+// 7. 🔥 溶岩ブロック
+class LavaBlock extends BaseBlock {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      blockType: 'lava',
+      emoji: '🔥',
+      color: '#FF4500',
+      backgroundColor: '#FF6347',
+      isBreakable: false
+    });
+    
+    this.damageTimer = 0;
+    this.damageInterval = 30; // 0.5秒ごと
+  }
+
+  updateAnimation() {
+    super.updateAnimation();
+    this.damageTimer++;
+  }
+
+  checkPlayerCollision(player) {
+    const collision = super.checkPlayerCollision(player);
+    
+    if (collision && !player.isInvincible) {
+      // 継続ダメージ
+      if (this.damageTimer >= this.damageInterval) {
+        this.damageTimer = 0;
+        player.takeDamage(1);
+        console.log('溶岩ダメージ！');
+      }
+    }
+    
+    return collision;
+  }
+
+  draw(ctx) {
+    super.draw(ctx);
+    
+    // 炎のアニメーション
+    if (this.isActive && !this.isBroken) {
+      ctx.save();
+      
+      const flameIntensity = 0.5 + Math.sin(this.animationTimer * 0.2) * 0.3;
+      ctx.globalAlpha = flameIntensity;
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = '#FF4500';
+      
+      // 揺らめく炎
+      const offset = Math.sin(this.animationTimer * 0.15) * 2;
+      ctx.fillStyle = '#FF6347';
+      ctx.fillRect(this.x + offset, this.y, this.width, this.height);
+      
+      ctx.restore();
+    }
+  }
+}
+
+// 8. ⬌⬍ 動くブロック (横移動)
+class MovingBlockHorizontal extends BaseBlock {
+  constructor(game, x, y, distance = 100) {
+    super(game, x, y, {
+      blockType: 'moving_h',
+      emoji: '⬌',
+      color: '#4169E1',
+      backgroundColor: '#6495ED',
+      isBreakable: false
+    });
+    
+    this.startX = x;
+    this.endX = x + distance;
+    this.speed = 1.5;
+    this.direction = 1;
+  }
+
+  updateAnimation() {
+    super.updateAnimation();
+    
+    // 往復移動
+    this.x += this.speed * this.direction;
+    
+    if (this.x >= this.endX) {
+      this.x = this.endX;
+      this.direction = -1;
+    } else if (this.x <= this.startX) {
+      this.x = this.startX;
+      this.direction = 1;
+    }
+  }
+
+  onPlayerLand(player) {
+    super.onPlayerLand(player);
+    
+    // プレイヤーをブロックと一緒に移動
+    player.x += this.speed * this.direction;
+  }
+}
+
+// 9. 動くブロック (縦移動)
+class MovingBlockVertical extends BaseBlock {
+  constructor(game, x, y, distance = 100) {
+    super(game, x, y, {
+      blockType: 'moving_v',
+      emoji: '⬍',
+      color: '#32CD32',
+      backgroundColor: '#90EE90',
+      isBreakable: false
+    });
+    
+    this.startY = y;
+    this.endY = y + distance;
+    this.speed = 1.5;
+    this.direction = 1;
+  }
+
+  updateAnimation() {
+    super.updateAnimation();
+    
+    // 往復移動
+    this.y += this.speed * this.direction;
+    
+    if (this.y >= this.endY) {
+      this.y = this.endY;
+      this.direction = -1;
+    } else if (this.y <= this.startY) {
+      this.y = this.startY;
+      this.direction = 1;
+    }
+  }
+
+  onPlayerLand(player) {
+    // プレイヤーの位置を更新
+    player.y = this.y - player.height;
+    player.vy = this.speed * this.direction;
+    player.onGround = true;
+  }
+}
+
+// 10. ◻️ 消えるブロック
+class DisappearingBlock extends BaseBlock {
+  constructor(game, x, y) {
+    super(game, x, y, {
+      blockType: 'disappearing',
+      emoji: '◻️',
+      color: '#9370DB',
+      backgroundColor: '#DDA0DD',
+      isBreakable: false
+    });
+    
+    this.solidDuration = 120; // 2秒
+    this.invisibleDuration = 120; // 2秒
+    this.warningDuration = 30; // 0.5秒（点滅開始）
+    
+    this.cycleTimer = 0;
+    this.isSolid = true;
+  }
+
+  updateAnimation() {
+    super.updateAnimation();
+    
+    this.cycleTimer++;
+    
+    const totalCycle = this.solidDuration + this.invisibleDuration;
+    const cyclePosition = this.cycleTimer % totalCycle;
+    
+    // 固体 → 消失のサイクル
+    if (cyclePosition < this.solidDuration) {
+      this.isSolid = true;
+    } else {
+      this.isSolid = false;
+    }
+  }
+
+  draw(ctx) {
+    if (!this.isActive) return;
+    
+    const totalCycle = this.solidDuration + this.invisibleDuration;
+    const cyclePosition = this.cycleTimer % totalCycle;
+    
+    // 消失状態では描画しない
+    if (!this.isSolid && cyclePosition >= this.solidDuration + 10) {
+      ctx.save();
+      ctx.globalAlpha = 0.2;
+      ctx.strokeStyle = this.color;
+      ctx.setLineDash([5, 5]);
+      ctx.strokeRect(this.x, this.y, this.width, this.height);
+      ctx.restore();
+      return;
+    }
+    
+    // 点滅警告
+    const timeUntilDisappear = this.solidDuration - cyclePosition;
+    if (this.isSolid && timeUntilDisappear > 0 && timeUntilDisappear <= this.warningDuration) {
+      const blinkSpeed = 5;
+      if (Math.floor(this.cycleTimer / blinkSpeed) % 2 === 0) {
+        ctx.globalAlpha = 0.5;
+      }
+    }
+    
+    super.draw(ctx);
+  }
+}
+
+/**
+ * BlockManager.js
+ * ブロック管理システム
+ */
+
+class BlockManager {
+  constructor(game) {
+    this.game = game;
+    this.blocks = [];
+  }
+
+  /**
+   * 更新処理
+   */
+  update() {
+    for (let i = this.blocks.length - 1; i >= 0; i--) {
+      const block = this.blocks[i];
+      block.update();
+      
+      // 非アクティブなブロックを削除
+      if (!block.isActive) {
+        this.blocks.splice(i, 1);
+      }
+    }
+  }
+
+  /**
+   * ブロック生成
+   */
+  spawnBlock(BlockClass, x, y, ...args) {
+    const block = new BlockClass(this.game, x, y, ...args);
+    this.blocks.push(block);
+    return block;
+  }
+
+  /**
+   * プレイヤーとの衝突チェック
+   */
+  checkPlayerCollisions(player) {
+    // 氷ブロックのフラグをリセット
+    player.onIce = false;
+    player.friction = player.friction || 0.8;
+    
+    for (const block of this.blocks) {
+      const collisionSide = block.checkPlayerCollision(player);
+      
+      if (collisionSide) {
+        block.onCollision(player, collisionSide);
+      }
+    }
+    
+    // 氷の上にいない場合は摩擦を通常に戻す
+    if (!player.onIce && player.friction > 0.9) {
+      player.friction = 0.8;
+    }
+  }
+
+  /**
+   * ブロックタイプからクラスを取得
+   */
+  getBlockClass(type) {
+    const blockClasses = {
+      'solid': SolidBlock,
+      'breakable': BreakableBlock,
+      'platform': PlatformBlock,
+      'question': QuestionBlock,
+      'ice': IceBlock,
+      'trampoline': TrampolineBlock,
+      'lava': LavaBlock,
+      'moving_h': MovingBlockHorizontal,
+      'moving_v': MovingBlockVertical,
+      'disappearing': DisappearingBlock
+    };
+    
+    return blockClasses[type];
+  }
+
+  /**
+   * レベルデータからブロック生成
+   */
+  loadLevel(levelData) {
+    this.clear();
+    
+    levelData.forEach(blockInfo => {
+      const BlockClass = this.getBlockClass(blockInfo.type);
+      if (BlockClass) {
+        this.spawnBlock(BlockClass, blockInfo.x, blockInfo.y, blockInfo.distance);
+      }
+    });
+  }
+
+  /**
+   * グリッド配置でブロック生成
+   */
+  createGrid(BlockClass, startX, startY, cols, rows, spacing = 40) {
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const x = startX + col * spacing;
+        const y = startY + row * spacing;
+        this.spawnBlock(BlockClass, x, y);
+      }
+    }
+  }
+
+  /**
+   * 全ブロック描画
+   */
+  draw(ctx) {
+    for (const block of this.blocks) {
+      block.draw(ctx);
+      
+      if (this.game.debug) {
+        block.drawDebug(ctx);
+      }
+    }
+  }
+
+  /**
+   * 全ブロッククリア
+   */
+  clear() {
+    this.blocks = [];
+  }
+
+  /**
+   * ブロック数を取得
+   */
+  getCount() {
+    return this.blocks.filter(b => b.isActive).length;
+  }
+
+  /**
+   * タイプ別ブロック数を取得
+   */
+  getCountByType(type) {
+    return this.blocks.filter(b => b.isActive && b.blockType === type).length;
+  }
+}
+
+// ==================== ステージデータ定義 ====================
+const STAGE_DATA = {
+  "1-1": {
+    name: "Hamburger Alley",
+    namej: "ハンバーガー横丁",
+    bgm: "stage1",
+    timeLimit: 180,
+    clearCondition: { type: "reach_goal", x: 2400 },
+    difficulty: "tutorial",
+    
+    blocks: [
+      // 地面
+      { type: "solid", x: 0, y: 550, width: 3000, height: 50 },
+      
+      // チュートリアル用の段差
+      { type: "solid", x: 300, y: 500 },
+      { type: "solid", x: 350, y: 450 },
+      { type: "solid", x: 400, y: 400 },
+      
+      // ハテナブロック（コイン入り）
+      { type: "question", x: 500, y: 350 },
+      { type: "question", x: 700, y: 350 },
+      
+      // 壊せるブロック
+      { type: "breakable", x: 900, y: 500 },
+      { type: "breakable", x: 950, y: 500 },
+      { type: "breakable", x: 1000, y: 500 },
+      
+      // 足場
+      { type: "platform", x: 1200, y: 400, width: 150 },
+      { type: "platform", x: 1400, y: 350, width: 150 },
+      
+      // ゴール手前の障害物
+      { type: "solid", x: 2000, y: 450, width: 50, height: 100 },
+      { type: "solid", x: 2100, y: 400, width: 50, height: 150 }
+    ],
+    
+    enemies: [
+      { type: "Hamburger", x: 600, y: 500, delay: 0 },
+      { type: "FrenchFries", x: 800, y: 500, delay: 2000 },
+      { type: "Hamburger", x: 1100, y: 500, delay: 4000 },
+      { type: "Pizza", x: 1500, y: 500, delay: 6000 }
+    ],
+    
+    items: [
+      { type: "coin", x: 400, y: 300 },
+      { type: "coin", x: 600, y: 400 },
+      { type: "coin", x: 800, y: 400 },
+      { type: "dumbbell", x: 1300, y: 300 },
+      { type: "protein", x: 1600, y: 200 }
+    ],
+    
+    goal: { x: 2400, y: 450, width: 50, height: 100 }
+  },
+  
+  "1-2": {
+    name: "Fried Avenue",
+    namej: "フライドアベニュー",
+    bgm: "stage1",
+    timeLimit: 200,
+    clearCondition: { type: "reach_goal", x: 3000 },
+    difficulty: "normal",
+    
+    blocks: [
+      { type: "solid", x: 0, y: 550, width: 3500, height: 50 },
+      
+      // 動く足場エリア
+      { type: "moving_horizontal", x: 400, y: 400, width: 100, range: 200 },
+      { type: "moving_horizontal", x: 800, y: 350, width: 100, range: 150 },
+      
+      // 氷ブロックエリア
+      { type: "ice", x: 1200, y: 500 },
+      { type: "ice", x: 1250, y: 500 },
+      { type: "ice", x: 1300, y: 500 },
+      { type: "ice", x: 1350, y: 500 },
+      
+      // トランポリンエリア
+      { type: "trampoline", x: 1600, y: 530 },
+      { type: "platform", x: 1650, y: 300, width: 100 },
+      
+      // 階段状の足場
+      { type: "solid", x: 2000, y: 500, width: 100, height: 50 },
+      { type: "solid", x: 2150, y: 450, width: 100, height: 100 },
+      { type: "solid", x: 2300, y: 400, width: 100, height: 150 },
+      
+      // ハテナブロック
+      { type: "question", x: 900, y: 300 },
+      { type: "question", x: 1500, y: 350 },
+      { type: "question", x: 2200, y: 350 }
+    ],
+    
+    enemies: [
+      { type: "FrenchFries", x: 500, y: 500, delay: 0 },
+      { type: "FrenchFries", x: 900, y: 500, delay: 2000 },
+      { type: "Donut", x: 1400, y: 500, delay: 4000 },
+      { type: "Virus", x: 1800, y: 500, delay: 6000 },
+      { type: "FrenchFries", x: 2200, y: 500, delay: 8000 }
+    ],
+    
+    items: [
+      { type: "coin", x: 450, y: 350 },
+      { type: "coin", x: 850, y: 300 },
+      { type: "gymgear", x: 1650, y: 250 },
+      { type: "protein", x: 2200, y: 300 },
+      { type: "dumbbell", x: 2500, y: 400 }
+    ],
+    
+    goal: { x: 3000, y: 450, width: 50, height: 100 }
+  },
+  
+  "1-3": {
+    name: "Pizza Plaza",
+    namej: "ピザプラザ",
+    bgm: "stage2",
+    timeLimit: 220,
+    clearCondition: { type: "reach_goal", x: 3200 },
+    difficulty: "normal",
+    
+    blocks: [
+      { type: "solid", x: 0, y: 550, width: 3700, height: 50 },
+      
+      // 消える床エリア
+      { type: "disappearing", x: 500, y: 450, width: 50 },
+      { type: "disappearing", x: 600, y: 450, width: 50 },
+      { type: "disappearing", x: 700, y: 450, width: 50 },
+      
+      // 壊せるブロックの壁
+      { type: "breakable", x: 1000, y: 500 },
+      { type: "breakable", x: 1000, y: 450 },
+      { type: "breakable", x: 1000, y: 400 },
+      { type: "breakable", x: 1050, y: 500 },
+      { type: "breakable", x: 1050, y: 450 },
+      
+      // 縦に動く足場
+      { type: "moving_vertical", x: 1300, y: 450, width: 100, range: 200 },
+      { type: "moving_vertical", x: 1500, y: 350, width: 100, range: 200 },
+      
+      // 複雑な足場配置
+      { type: "platform", x: 1800, y: 450, width: 100 },
+      { type: "platform", x: 2000, y: 400, width: 80 },
+      { type: "platform", x: 2200, y: 350, width: 100 },
+      { type: "platform", x: 2400, y: 400, width: 80 },
+      
+      // ハテナブロック
+      { type: "question", x: 1200, y: 350 },
+      { type: "question", x: 1900, y: 350 },
+      { type: "question", x: 2500, y: 300 }
+    ],
+    
+    enemies: [
+      { type: "Pizza", x: 600, y: 500, delay: 0 },
+      { type: "Pizza", x: 1100, y: 500, delay: 2000 },
+      { type: "Bacteria", x: 1400, y: 500, delay: 4000 },
+      { type: "Pizza", x: 1900, y: 500, delay: 6000 },
+      { type: "Virus", x: 2300, y: 500, delay: 8000 },
+      { type: "Pizza", x: 2700, y: 500, delay: 10000 }
+    ],
+    
+    items: [
+      { type: "coin", x: 550, y: 400 },
+      { type: "coin", x: 650, y: 400 },
+      { type: "protein", x: 1300, y: 350 },
+      { type: "dumbbell", x: 1800, y: 400 },
+      { type: "gymgear", x: 2200, y: 300 },
+      { type: "coin", x: 2500, y: 250 }
+    ],
+    
+    goal: { x: 3200, y: 450, width: 50, height: 100 }
+  },
+  
+  "1-4": {
+    name: "Donut Park",
+    namej: "ドーナツパーク",
+    bgm: "stage2",
+    timeLimit: 240,
+    clearCondition: { type: "reach_goal", x: 3500 },
+    difficulty: "hard",
+    
+    blocks: [
+      { type: "solid", x: 0, y: 550, width: 4000, height: 50 },
+      
+      // 溶岩エリア
+      { type: "lava", x: 600, y: 530, width: 200 },
+      { type: "platform", x: 650, y: 450, width: 100 },
+      
+      // トランポリンコンボ
+      { type: "trampoline", x: 1000, y: 530 },
+      { type: "platform", x: 1050, y: 300, width: 80 },
+      { type: "trampoline", x: 1200, y: 530 },
+      { type: "platform", x: 1250, y: 250, width: 80 },
+      
+      // 氷の滑る床
+      { type: "ice", x: 1500, y: 500 },
+      { type: "ice", x: 1550, y: 500 },
+      { type: "ice", x: 1600, y: 500 },
+      { type: "ice", x: 1650, y: 500 },
+      { type: "ice", x: 1700, y: 500 },
+      
+      // 複雑な動く足場
+      { type: "moving_horizontal", x: 2000, y: 400, width: 100, range: 300 },
+      { type: "moving_vertical", x: 2400, y: 450, width: 100, range: 200 },
+      
+      // 壊せるブロックの迷路
+      { type: "breakable", x: 2700, y: 500 },
+      { type: "breakable", x: 2750, y: 500 },
+      { type: "breakable", x: 2700, y: 450 },
+      { type: "solid", x: 2800, y: 500, width: 50, height: 50 },
+      { type: "breakable", x: 2850, y: 500 },
+      { type: "breakable", x: 2850, y: 450 },
+      
+      // ゴール前の最終チャレンジ
+      { type: "disappearing", x: 3100, y: 450, width: 50 },
+      { type: "disappearing", x: 3200, y: 450, width: 50 },
+      { type: "trampoline", x: 3300, y: 530 },
+      
+      // ハテナブロック
+      { type: "question", x: 900, y: 350 },
+      { type: "question", x: 1400, y: 350 },
+      { type: "question", x: 2100, y: 300 },
+      { type: "question", x: 2900, y: 350 }
+    ],
+    
+    enemies: [
+      { type: "Donut", x: 700, y: 500, delay: 0 },
+      { type: "Donut", x: 1100, y: 500, delay: 2000 },
+      { type: "PoisonMushroom", x: 1600, y: 500, delay: 4000 },
+      { type: "Donut", x: 2100, y: 500, delay: 6000 },
+      { type: "Pathogen", x: 2500, y: 500, delay: 8000 },
+      { type: "Donut", x: 2800, y: 500, delay: 10000 },
+      { type: "Bacteria", x: 3200, y: 500, delay: 12000 }
+    ],
+    
+    items: [
+      { type: "coin", x: 650, y: 400 },
+      { type: "protein", x: 1050, y: 250 },
+      { type: "dumbbell", x: 1250, y: 200 },
+      { type: "gymgear", x: 1900, y: 400 },
+      { type: "protein", x: 2400, y: 350 },
+      { type: "coin", x: 2900, y: 300 },
+      { type: "dumbbell", x: 3300, y: 400 }
+    ],
+    
+    goal: { x: 3500, y: 450, width: 50, height: 100 }
+  },
+  
+  "1-5": {
+    name: "Final Boss Battle",
+    namej: "最終決戦",
+    bgm: "boss",
+    timeLimit: 300,
+    clearCondition: { type: "defeat_boss" },
+    difficulty: "boss",
+    
+    blocks: [
+      // ボス戦用のシンプルなアリーナ
+      { type: "solid", x: 0, y: 550, width: 1500, height: 50 },
+      
+      // 両端に壁
+      { type: "solid", x: -50, y: 0, width: 50, height: 600 },
+      { type: "solid", x: 1500, y: 0, width: 50, height: 600 },
+      
+      // 足場
+      { type: "platform", x: 300, y: 400, width: 150 },
+      { type: "platform", x: 700, y: 400, width: 150 },
+      { type: "platform", x: 1050, y: 400, width: 150 },
+      { type: "platform", x: 500, y: 300, width: 100 },
+      { type: "platform", x: 900, y: 300, width: 100 },
+      
+      // ハテナブロック（回復用）
+      { type: "question", x: 150, y: 350 },
+      { type: "question", x: 1300, y: 350 }
+    ],
+    
+    boss: {
+      type: "SlothSlob", // 最終ボス
+      x: 750,
+      y: 400
+    },
+    
+    enemies: [
+      // ボス戦中に追加で出現する雑魚敵
+    ],
+    
+    items: [
+      { type: "protein", x: 500, y: 250 },
+      { type: "dumbbell", x: 900, y: 250 }
+    ]
+  },
+  
+  "H-1": {
+    name: "Muscle Paradise",
+    namej: "筋肉の楽園",
+    bgm: "hidden",
+    timeLimit: 300,
+    clearCondition: { type: "reach_goal", x: 4000 },
+    difficulty: "hidden",
+    
+    blocks: [
+      { type: "solid", x: 0, y: 550, width: 4500, height: 50 },
+      
+      // 超難易度の障害物コース
+      // トランポリンコンボ
+      { type: "trampoline", x: 300, y: 530 },
+      { type: "platform", x: 350, y: 350, width: 80 },
+      { type: "trampoline", x: 500, y: 530 },
+      { type: "platform", x: 550, y: 250, width: 80 },
+      { type: "trampoline", x: 700, y: 530 },
+      { type: "platform", x: 750, y: 200, width: 80 },
+      
+      // 消える床の連続
+      { type: "disappearing", x: 1000, y: 450, width: 50 },
+      { type: "disappearing", x: 1100, y: 450, width: 50 },
+      { type: "disappearing", x: 1200, y: 450, width: 50 },
+      { type: "disappearing", x: 1300, y: 450, width: 50 },
+      { type: "disappearing", x: 1400, y: 450, width: 50 },
+      
+      // 溶岩エリア
+      { type: "lava", x: 1600, y: 530, width: 400 },
+      { type: "moving_horizontal", x: 1700, y: 450, width: 80, range: 250 },
+      
+      // 氷と動く足場の複合
+      { type: "ice", x: 2200, y: 500 },
+      { type: "ice", x: 2250, y: 500 },
+      { type: "moving_vertical", x: 2350, y: 400, width: 100, range: 200 },
+      { type: "ice", x: 2550, y: 500 },
+      { type: "ice", x: 2600, y: 500 },
+      
+      // 壊せるブロックの迷路
+      { type: "breakable", x: 2800, y: 500 },
+      { type: "breakable", x: 2850, y: 500 },
+      { type: "breakable", x: 2800, y: 450 },
+      { type: "breakable", x: 2900, y: 500 },
+      { type: "breakable", x: 2900, y: 450 },
+      { type: "breakable", x: 2900, y: 400 },
+      
+      // 最終チャレンジ
+      { type: "moving_horizontal", x: 3200, y: 400, width: 100, range: 300 },
+      { type: "moving_vertical", x: 3600, y: 450, width: 100, range: 250 },
+      { type: "trampoline", x: 3900, y: 530 },
+      
+      // ハテナブロック（大量配置）
+      { type: "question", x: 900, y: 350 },
+      { type: "question", x: 1500, y: 300 },
+      { type: "question", x: 2100, y: 350 },
+      { type: "question", x: 2700, y: 300 },
+      { type: "question", x: 3400, y: 300 }
+    ],
+    
+    enemies: [
+      // 全種類の敵が大量出現
+      { type: "Hamburger", x: 400, y: 500, delay: 0 },
+      { type: "FrenchFries", x: 800, y: 500, delay: 1000 },
+      { type: "Pizza", x: 1200, y: 500, delay: 2000 },
+      { type: "Donut", x: 1600, y: 500, delay: 3000 },
+      { type: "Soda", x: 2000, y: 500, delay: 4000 },
+      { type: "Virus", x: 2400, y: 500, delay: 5000 },
+      { type: "Bacteria", x: 2800, y: 500, delay: 6000 },
+      { type: "PoisonMushroom", x: 3200, y: 500, delay: 7000 },
+      { type: "Pathogen", x: 3600, y: 500, delay: 8000 },
+      { type: "DecayGerm", x: 3900, y: 500, delay: 9000 }
+    ],
+    
+    items: [
+      // 大量のアイテム
+      { type: "protein", x: 750, y: 150 },
+      { type: "dumbbell", x: 1250, y: 400 },
+      { type: "gymgear", x: 2350, y: 300 },
+      { type: "protein", x: 3200, y: 350 },
+      { type: "dumbbell", x: 3600, y: 350 },
+      { type: "coin", x: 500, y: 300 },
+      { type: "coin", x: 1000, y: 400 },
+      { type: "coin", x: 1500, y: 250 },
+      { type: "coin", x: 2000, y: 400 },
+      { type: "coin", x: 2500, y: 450 },
+      { type: "coin", x: 3000, y: 400 },
+      { type: "coin", x: 3500, y: 300 }
+    ],
+    
+    goal: { x: 4000, y: 450, width: 50, height: 100 }
+  }
+};
+
+// ステージデータ取得用のヘルパー関数
+function getStageData(stageId) {
+  return STAGE_DATA[stageId] || null;
+}
+
+function getAllStageIds() {
+  return Object.keys(STAGE_DATA);
+}
+
+// ========== ゲームメイン ==========
+const canvas=document.getElementById('canvas');
+const ctx=canvas.getContext('2d');
+const W=800,H=600,GROUND=550;
+const keys={},keyPressed={};
+let scene='title',stage=null,menuIdx=0,stageIdx=0;
+const stages=[
+  {id:'1-1',name:'Hamburger Alley',unlocked:true},
+  {id:'1-2',name:'Fried Avenue',unlocked:false},
+  {id:'1-3',name:'Pizza Plaza',unlocked:false},
+  {id:'1-4',name:'Donut Park',unlocked:false},
+  {id:'1-5',name:'Final Boss',unlocked:false},
+  {id:'H-1',name:'Muscle Paradise',unlocked:false}
+];
+
+class GameStage {
+  constructor(id) {
+    this.id=id;
+    this.data=getStageData(id);
+    this.player={
+      x:100,y:GROUND-PLAYER_HEIGHT,w:PLAYER_WIDTH,h:PLAYER_HEIGHT,
+      vx:0,vy:0,grounded:false,dir:1,
+      fat:0,muscle:0,body:'NORMAL',
+      hp:3,invincible:false,invTimer:0,anim:0,dashCD:0
+    };
+    this.state={score:0,coins:0,time:this.data.timeLimit,clear:false,over:false};
+    this.cam=0;
+    this.enemies=new EnemyManager(this);
+    this.items=new ItemManager(this);
+    this.blocks=new BlockManager(this);
+    this.load();
+  }
+  
+  load() {
+    if(this.data.blocks) {
+      this.data.blocks.forEach(b=>{
+        const C={
+          solid:SolidBlock,breakable:BreakableBlock,platform:PlatformBlock,
+          question:QuestionBlock,ice:IceBlock,trampoline:TrampolineBlock,
+          lava:LavaBlock,moving_horizontal:MovingBlockHorizontal,
+          moving_vertical:MovingBlockVertical,disappearing:DisappearingBlock
+        }[b.type];
+        if(C) this.blocks.spawnBlock(C,b.x,b.y,b.width||50,b.height||50);
+      });
+    }
+    if(this.data.enemies) {
+      this.data.enemies.forEach(e=>{
+        setTimeout(()=>{
+          const C={Hamburger,FrenchFries,Pizza,Donut,Soda,Virus,Bacteria,PoisonMushroom,Pathogen,DecayGerm}[e.type];
+          if(C) this.enemies.spawnEnemy(C,e.x,e.y);
+        },e.delay||0);
+      });
+    }
+    if(this.data.items) {
+      this.data.items.forEach(i=>this.items.spawnItem(i.type,i.x,i.y));
+    }
+  }
+  
+  update() {
+    if(this.state.clear||this.state.over) return;
+    const p=this.player;
+    const td=getBodyTypeData(p.body);
+    
+    p.vy+=GRAVITY;
+    if(p.invincible){p.invTimer--;if(p.invTimer<=0)p.invincible=false;}
+    
+    const spd=PLAYER_SPEED*td.speedMultiplier;
+    if(keys.ArrowLeft||keys.KeyA){p.vx=-spd;p.dir=-1;}
+    else if(keys.ArrowRight||keys.KeyD){p.vx=spd;p.dir=1;}
+    else{p.vx*=0.8;if(Math.abs(p.vx)<0.1)p.vx=0;}
+    
+    if((keys.Space||keys.ArrowUp)&&!keyPressed.Space&&!keyPressed.ArrowUp){
+      if(p.grounded){
+        p.vy=JUMP_POWER*td.jumpMultiplier;
+        p.grounded=false;
+        keyPressed.Space=keyPressed.ArrowUp=true;
+      }
+    }
+    
+    if((keys.ShiftLeft||keys.ShiftRight||keys.KeyX)&&p.dashCD===0){
+      p.vx=p.dir*DASH_SPEED*td.dashMultiplier;
+      p.dashCD=60;
+    }
+    if(p.dashCD>0)p.dashCD--;
+    
+    if(keys.KeyQ)p.fat=Math.min(100,p.fat+1);
+    if(keys.KeyE)p.muscle=Math.min(100,p.muscle+1);
+    if(keys.KeyR){p.fat=0;p.muscle=0;}
+    
+    p.body=determineBodyType(p.fat,p.muscle);
+    
+    p.x+=p.vx;
+    p.y+=p.vy;
+    p.grounded=false;
+    
+    if(p.y+p.h>=GROUND){p.y=GROUND-p.h;p.vy=0;p.grounded=true;}
+    p.x=Math.max(0,p.x);
+    if(p.vx!==0)p.anim+=0.2;
+    if(p.y>H+100)this.state.over=true;
+    
+    this.blocks.blocks.forEach(b=>{
+      if(!b.isActive)return;
+      if(p.x<b.x+b.width&&p.x+p.w>b.x&&p.y<b.y+b.height&&p.y+p.h>b.y){
+        if(p.vy>0&&p.y+p.h-p.vy<b.y+10){p.y=b.y-p.h;p.vy=0;p.grounded=true;}
+      }
+    });
+    
+    this.enemies.enemies.forEach(e=>{
+      if(!e.isAlive)return;
+      if(p.x<e.x+e.width&&p.x+p.w>e.x&&p.y<e.y+e.height&&p.y+p.h>e.y){
+        if(p.vy>0&&p.y+p.h-p.vy<e.y+10){
+          e.takeDamage(e.hp);p.vy=-8;this.state.score+=100;
+        }else if(!p.invincible){
+          p.hp--;p.invincible=true;p.invTimer=90;
+          p.vx=-p.dir*5;p.vy=-5;
+          if(p.hp<=0)this.state.over=true;
+        }
+      }
+    });
+    
+    this.items.items.forEach(i=>{
+      if(!i.isActive)return;
+      if(p.x<i.x+i.width&&p.x+p.w>i.x&&p.y<i.y+i.height&&p.y+p.h>i.y){
+        if(i.type==='coin'){this.state.coins++;this.state.score+=100;}
+        else if(i.type==='protein')p.muscle=Math.min(100,p.muscle+30);
+        i.isActive=false;
+      }
+    });
+    
+    this.cam+=((p.x-W/3)-this.cam)*0.1;
+    this.cam=Math.max(0,this.cam);
+    
+    this.enemies.update();
+    this.items.update();
+    this.blocks.update();
+    
+    this.state.time-=1/60;
+    if(this.state.time<=0)this.state.over=true;
+    
+    const cond=this.data.clearCondition;
+    if(cond.type==='reach_goal'&&p.x>=cond.x)this.state.clear=true;
+  }
+  
+  draw() {
+    const g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#87CEEB');
+    g.addColorStop(1,'#E0F6FF');
+    ctx.fillStyle=g;
+    ctx.fillRect(0,0,W,H);
+    
+    ctx.save();
+    ctx.translate(-this.cam,0);
+    
+    ctx.fillStyle='#8B4513';
+    ctx.fillRect(0,GROUND,10000,50);
+    ctx.fillStyle='#228B22';
+    ctx.fillRect(0,GROUND-5,10000,5);
+    
+    this.blocks.draw(ctx);
+    this.items.draw(ctx);
+    this.enemies.draw(ctx);
+    
+    const p=this.player;
+    const td=getBodyTypeData(p.body);
+    
+    if(p.invincible&&Math.floor(p.invTimer/5)%2===0)ctx.globalAlpha=0.5;
+    
+    const bounce=Math.sin(p.anim)*2;
+    ctx.fillStyle=td.color;
+    ctx.fillRect(p.x,p.y+bounce,p.w,p.h);
+    ctx.strokeStyle='#000';
+    ctx.lineWidth=2;
+    ctx.strokeRect(p.x,p.y+bounce,p.w,p.h);
+    
+    ctx.fillStyle='#FFE4C4';
+    ctx.beginPath();
+    ctx.arc(p.x+p.w/2,p.y+12+bounce,10,0,Math.PI*2);
+    ctx.fill();
+    ctx.stroke();
+    
+    ctx.fillStyle='#000';
+    const eyeX=p.dir>0?4:-4;
+    ctx.beginPath();
+    ctx.arc(p.x+p.w/2+eyeX,p.y+10+bounce,3,0,Math.PI*2);
+    ctx.fill();
+    
+    ctx.font='bold 10px "Press Start 2P"';
+    ctx.fillStyle=td.color;
+    ctx.textAlign='center';
+    ctx.fillText(p.body,p.x+p.w/2,p.y-10+bounce);
+    
+    ctx.globalAlpha=1;
+    
+    if(this.data.goal){
+      const go=this.data.goal;
+      ctx.fillStyle='#FFD700';
+      ctx.fillRect(go.x,go.y,go.width,go.height);
+      ctx.strokeStyle='#000';
+      ctx.lineWidth=3;
+      ctx.strokeRect(go.x,go.y,go.width,go.height);
+    }
+    
+    ctx.restore();
+    
+    ctx.fillStyle='rgba(0,0,0,0.8)';
+    ctx.fillRect(0,0,W,60);
+    
+    ctx.font='16px Arial';
+    ctx.textAlign='left';
+    for(let i=0;i<3;i++)ctx.fillText(i<p.hp?'❤️':'🖤',10+i*25,25);
+    
+    ctx.font='bold 12px "Press Start 2P"';
+    ctx.fillStyle=td.color;
+    ctx.fillText(p.body,100,25);
+    
+    this.drawGauge(ctx,200,8,150,18,p.fat,'#FFA500','FAT');
+    this.drawGauge(ctx,200,34,150,18,p.muscle,'#FF4444','MUSCLE');
+    
+    ctx.fillStyle='#FFD700';
+    ctx.textAlign='right';
+    ctx.fillText(`SCORE: ${Math.floor(this.state.score)}`,W-10,20);
+    ctx.fillStyle='#87CEEB';
+    ctx.fillText(`TIME: ${Math.ceil(this.state.time)}`,W-10,45);
+    
+    if(this.state.clear){
+      ctx.fillStyle='rgba(0,0,0,0.7)';
+      ctx.fillRect(0,0,W,H);
+      ctx.font='48px "Press Start 2P"';
+      ctx.fillStyle='#FFD700';
+      ctx.textAlign='center';
+      ctx.fillText('STAGE CLEAR!',W/2,H/2);
+    }
+    
+    if(this.state.over){
+      ctx.fillStyle='rgba(0,0,0,0.7)';
+      ctx.fillRect(0,0,W,H);
+      ctx.font='48px "Press Start 2P"';
+      ctx.fillStyle='#FF4444';
+      ctx.textAlign='center';
+      ctx.fillText('GAME OVER',W/2,H/2);
+    }
+  }
+  
+  drawGauge(ctx,x,y,w,h,val,color,label) {
+    ctx.font='8px "Press Start 2P"';
+    ctx.fillStyle='#FFF';
+    ctx.textAlign='left';
+    ctx.fillText(label,x-50,y+h-4);
+    
+    ctx.fillStyle='#333';
+    ctx.fillRect(x,y,w,h);
+    
+    const fill=w*(val/100);
+    ctx.fillStyle=color;
+    ctx.fillRect(x+1,y+1,fill-2,h-2);
+    
+    ctx.strokeStyle='#FFF';
+    ctx.lineWidth=2;
+    ctx.strokeRect(x,y,w,h);
+    
+    ctx.font='10px "Press Start 2P"';
+    ctx.fillStyle='#FFF';
+    ctx.textAlign='center';
+    ctx.fillText(Math.floor(val),x+w/2,y+h-5);
+  }
+}
+
+document.addEventListener('keydown',e=>{
+  keys[e.code]=true;
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','Enter','Escape','ShiftLeft','ShiftRight','KeyQ','KeyE','KeyR','KeyX','KeyA','KeyD'].includes(e.code))
+    e.preventDefault();
+});
+
+document.addEventListener('keyup',e=>{
+  keys[e.code]=false;
+  keyPressed[e.code]=false;
+});
+
+const menu=['START GAME','SETTINGS','HOW TO PLAY'];
+
+function update(){
+  if(scene==='title'){
+    if(keys.ArrowUp&&!keyPressed.ArrowUp){menuIdx--;if(menuIdx<0)menuIdx=menu.length-1;keyPressed.ArrowUp=true;}
+    if(keys.ArrowDown&&!keyPressed.ArrowDown){menuIdx++;if(menuIdx>=menu.length)menuIdx=0;keyPressed.ArrowDown=true;}
+    if((keys.Space||keys.Enter)&&!keyPressed.Space&&!keyPressed.Enter){
+      keyPressed.Space=keyPressed.Enter=true;
+      if(menuIdx===0)scene='map';
+    }
+  }else if(scene==='map'){
+    if(keys.ArrowLeft&&!keyPressed.ArrowLeft){stageIdx--;if(stageIdx<0)stageIdx=stages.length-1;keyPressed.ArrowLeft=true;}
+    if(keys.ArrowRight&&!keyPressed.ArrowRight){stageIdx++;if(stageIdx>=stages.length)stageIdx=0;keyPressed.ArrowRight=true;}
+    if((keys.Space||keys.Enter)&&!keyPressed.Space&&!keyPressed.Enter){
+      keyPressed.Space=keyPressed.Enter=true;
+      if(stages[stageIdx].unlocked){scene='stage';stage=new GameStage(stages[stageIdx].id);}
+    }
+    if(keys.Escape&&!keyPressed.Escape){scene='title';keyPressed.Escape=true;}
+  }else if(scene==='stage'){
+    if(stage){
+      stage.update();
+      if(stage.state.clear){
+        const idx=stages.findIndex(s=>s.id===stage.id);
+        if(idx>=0&&idx<stages.length-1)stages[idx+1].unlocked=true;
+        setTimeout(()=>{scene='map';stage=null;},2000);
+      }
+      if(stage.state.over)setTimeout(()=>{scene='map';stage=null;},2000);
+    }
+  }
+}
+
+function draw(){
+  if(scene==='title'){
+    ctx.fillStyle='#0a0a1a';
+    ctx.fillRect(0,0,W,H);
+    ctx.font='bold 48px "Press Start 2P"';
+    ctx.fillStyle='#ff4444';
+    ctx.textAlign='center';
+    ctx.fillText('MUSCLE',W/2,120);
+    ctx.fillText('TRAINER',W/2,180);
+    ctx.font='12px "Press Start 2P"';
+    ctx.fillStyle='#00ff88';
+    ctx.fillText('GET FIT OR GET FAT',W/2,220);
+    ctx.font='16px "Press Start 2P"';
+    menu.forEach((m,i)=>{
+      const y=300+i*50;
+      if(i===menuIdx){
+        ctx.fillStyle='rgba(0,255,136,0.3)';
+        ctx.fillRect(200,y-25,400,45);
+        ctx.strokeStyle='#00ff88';
+        ctx.lineWidth=2;
+        ctx.strokeRect(200,y-25,400,45);
+        ctx.fillStyle='#00ff88';
+        ctx.fillText('▶ '+m+' ◀',W/2,y);
+      }else{
+        ctx.fillStyle='#fff';
+        ctx.fillText(m,W/2,y);
+      }
+    });
+    ctx.font='10px "Press Start 2P"';
+    ctx.fillStyle='#666';
+    ctx.fillText('↑↓: SELECT   SPACE: DECIDE',W/2,550);
+  }else if(scene==='map'){
+    const g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#87CEEB');
+    g.addColorStop(1,'#E0F6FF');
+    ctx.fillStyle=g;
+    ctx.fillRect(0,0,W,H);
+    ctx.font='24px "Press Start 2P"';
+    ctx.fillStyle='#000';
+    ctx.textAlign='center';
+    ctx.fillText('WORLD MAP',W/2,50);
+    stages.forEach((s,i)=>{
+      const x=100+(i%3)*200;
+      const y=200+Math.floor(i/3)*150;
+      ctx.fillStyle=s.unlocked?'#00ff88':'#666';
+      ctx.fillRect(x-30,y-30,60,60);
+      ctx.strokeStyle='#000';
+      ctx.lineWidth=3;
+      ctx.strokeRect(x-30,y-30,60,60);
+      if(i===stageIdx){
+        ctx.strokeStyle='#ff4444';
+        ctx.lineWidth=4;
+        ctx.strokeRect(x-35,y-35,70,70);
+      }
+      ctx.font='14px "Press Start 2P"';
+      ctx.fillStyle=s.unlocked?'#000':'#333';
+      ctx.textAlign='center';
+      ctx.fillText(s.id,x,y+5);
+      ctx.font='8px "Press Start 2P"';
+      ctx.fillText(s.name,x,y+50);
+    });
+    ctx.font='10px "Press Start 2P"';
+    ctx.fillStyle='#000';
+    ctx.fillText('←→: SELECT   SPACE: START   ESC: BACK',W/2,550);
+  }else if(scene==='stage'){
+    if(stage)stage.draw();
+  }
+}
+
+function loop(){update();draw();requestAnimationFrame(loop);}
+loop();
+console.log('🎮 MUSCLE TRAINER - Ready!');
+console.log('Q: FAT+  E: MUSCLE+  R: Reset  ←→: Move  Space: Jump  Shift: Dash');
+  </script>
+</body>
+</html>
